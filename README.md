@@ -17,8 +17,8 @@
 | `umodel_export` | `-export` | 导出网格/贴图/动画/声音（psk、gltf、png、dds…） |
 | `umodel_save` | `-save` | 原样拷出原始包文件（.upk + .uexp/.ubulk） |
 | `umodel_list_output` | — | 查看导出结果目录树（含文件大小） |
-| `nrc_list` | — | 解密 NRC（洛克王国：世界）pak 索引并搜索资产路径 |
-| `nrc_extract` | — | 从 NRC 加密 pak 中提取原始 .uasset/.uexp 文件 |
+| `pak_list` | — | 直接解析 .pak 索引（不经 umodel），支持 AES 加密索引，搜索资产路径 |
+| `pak_extract` | — | 从 .pak 中提取原始 .uasset/.uexp 文件（含加密 pak） |
 
 ## 安装与构建
 
@@ -46,9 +46,10 @@ npm run build
   "outputDir": "C:/export",
   "defaultArgs": [],
   "timeoutMs": 300000,
-  "nrcPakDir": "D:/Games/NRC/Content/Paks",
-  "nrcOutputDir": "C:/export/nrc",
-  "nrcAesKey": "0xAAAAAAAA..."
+  "pakDir": "D:/Games/SomeGame/Content/Paks",
+  "pakOutputDir": "C:/export/pak",
+  "pakAesKey": "0xAAAAAAAA...",
+  "pakAesMode": "standard"
 }
 ```
 
@@ -87,9 +88,9 @@ umodel_export        { package: "pakchunk0", textureFormat: "png", sounds: true,
 umodel_save          { package: "*", out: "C:/raw" } # 原样解包
 umodel_list_output   { directory: "C:/export" }      # 查看导出结果
 
-# NRC（洛克王国：世界）工作流：先搜索再提取，提取出的散文件可再交给 umodel_export 转换
-nrc_list     { filters: ["SKM_PC2"] }
-nrc_extract  { filters: ["SKM_PC2"], out: "C:/export/nrc" }
+# pak_* 工作流：先搜索再提取，提取出的散文件可再交给 umodel_export 转换
+pak_list     { filters: ["SKM_PC2"] }
+pak_extract  { filters: ["SKM_PC2"], out: "C:/export/pak" }
 ```
 
 ## 说明
@@ -101,15 +102,21 @@ nrc_extract  { filters: ["SKM_PC2"], out: "C:/export/nrc" }
   `umodel_list_objects` 另支持 `filter`（行级子串过滤）与 `skip`/`limit`（分页），
   适合在超大包里定位对象。
 
-## NRC（洛克王国：世界）支持
+## 加密 pak 支持（pak_list / pak_extract）
 
-该游戏的 pak 使用了自定义加密的索引（字节序翻转 + 位翻转的 AES-256-ECB），
-umodel 无法直接读取。`nrc_list` / `nrc_extract` 内置了对应的解密与索引解析：
+umodel 读不了的 pak（如索引被加密、或 umodel 尚未适配的游戏）可以用
+`pak_list` / `pak_extract` 直接解析 UE4 pak 索引：
 
-1. 在配置中设置 `nrcPakDir`（pak 目录）、`nrcOutputDir`（提取输出目录）和 `nrcAesKey`（十六进制密钥）。
-2. `nrc_list` 按子串过滤搜索包内资产路径。
-3. `nrc_extract` 提取原始 `.uasset/.uexp`，支持 None/Zlib/Gzip 压缩与条目级加密。
-4. 提取出的散文件可把目录指给 `umodel_export` 继续转换为 gltf/png 等格式。
+1. 配置 `pakDir`（pak 目录）、`pakOutputDir`（提取输出目录）。
+2. 索引加密的游戏还需 `pakAesKey`（十六进制密钥）。
+3. `pakAesMode` 选择解密方式：
+   - `standard`：标准 AES-256-ECB（默认）。
+   - `bitflip`：部分游戏（如洛克王国：世界）的自定义变体，
+     对密钥做字节序翻转、对密文块做位翻转后再走 AES。
+   也可在单次调用时用 `aesMode` 参数临时覆盖。
+4. `pak_list` 按子串过滤搜索包内资产路径；`pak_extract` 提取原始
+   `.uasset/.uexp`，支持 None/Zlib/Gzip 压缩与条目级加密。
+5. 提取出的散文件可把目录指给 `umodel_export` 继续转换为 gltf/png 等格式。
 
 出于安全考虑，AES 密钥不在源码中内置，必须由使用者自行配置；请避免将含密钥的
 `umodel-mcp.json` 提交到仓库（本项目 `.gitignore` 已忽略该文件）。

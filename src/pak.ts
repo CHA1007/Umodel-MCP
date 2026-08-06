@@ -5,18 +5,19 @@ import zlib from "node:zlib";
 
 const PAK_MAGIC = 0x5a6f12e1;
 const TAIL_SIZE = 0xcd;
-const UASSET_MAGIC = 0x9e2a83c1;
+
+export type PakAesMode = "standard" | "bitflip";
 
 function requireKey(keyHex?: string): Buffer {
   if (!keyHex) {
     throw new Error(
-      "nrcAesKey is not configured. Set it via umodel_config_set or in umodel-mcp.json (hex, 0x prefix optional).",
+      "pakAesKey is not configured. Set it via umodel_config_set or in umodel-mcp.json (hex, 0x prefix optional).",
     );
   }
   return Buffer.from(keyHex.replace(/^0x/, ""), "hex");
 }
 
-export interface NrcEntry {
+export interface PakEntry {
   pak: string;
   path: string;
   offset: number;
@@ -27,12 +28,12 @@ export interface NrcEntry {
   blocks: { start: number; end: number }[];
 }
 
-export interface NrcPakIndex {
+export interface PakIndex {
   pak: string;
   version: number;
   mountPoint: string;
   compressionMethods: string[];
-  entries: NrcEntry[];
+  entries: PakEntry[];
 }
 
 function byteReverse(key: Buffer): Buffer {
@@ -57,13 +58,14 @@ function bitReverse(data: Buffer): Buffer {
   return d;
 }
 
-function aesDecryptCustom(data: Buffer, key: Buffer): Buffer {
-  const decipher = crypto.createDecipheriv("aes-256-ecb", byteReverse(key), null);
+function aesDecrypt(data: Buffer, key: Buffer, mode: PakAesMode): Buffer {
+  const k = mode === "bitflip" ? byteReverse(key) : key;
+  const decipher = crypto.createDecipheriv("aes-256-ecb", k, null);
   decipher.setAutoPadding(false);
   const parts: Buffer[] = [];
   for (let i = 0; i < data.length; i += 16) {
     const block = data.subarray(i, i + 16);
-    parts.push(decipher.update(bitReverse(block)));
+    parts.push(decipher.update(mode === "bitflip" ? bitReverse(block) : block));
   }
   return Buffer.concat(parts);
 }
@@ -123,7 +125,7 @@ function readAt(fd: number, offset: number, size: number): Buffer {
   return buf.subarray(0, read);
 }
 
-function decodeEntry(blob: Buffer, offset: number, methods: string[]): Omit<NrcEntry, "pak" | "path"> | null {
+function decodeEntry(blob: Buffer, offset: number, methods: string[]): Omit<PakEntry, "pak" | "path"> | null {
   const r = new Reader(blob);
   r.pos = offset;
   const bitfield = r.u32();
@@ -169,8 +171,7 @@ function decodeEntry(blob: Buffer, offset: number, methods: string[]): Omit<NrcE
   };
 }
 
-export function parsePakIndex(pakPath: string, keyHex?: string): NrcPakIndex | null {
-  const key = requireKey(keyHex);
+export function parsePakIndex(pakPath: string, keyHex?: string, mode: PakAesMode = "standard"): PakIndex | null {
   const fd = fs.openSync(pakPath, "r");
   try {
     const stat = fs.fstatSync(fd);
@@ -190,7 +191,7 @@ export function parsePakIndex(pakPath: string, keyHex?: string): NrcPakIndex | n
       compressionMethods.push(s || "None");
     }
 
-    const decrypt = (buf: Buffer) => (encryptedIndex ? aesDecryptCustom(buf, key) : buf);
+    const decrypt = (buf: Buffer) => (encryptedIndex ? aesDecrypt(buf, requireKey(keyHex), mode) : buf);
     const primary = new Reader(decrypt(readAt(fd, indexOffset, indexSize)));
     const mountPoint = primary.fstring();
     const fileCount = primary.i32();
@@ -209,7 +210,7 @@ export function parsePakIndex(pakPath: string, keyHex?: string): NrcPakIndex | n
     if (nonEncodedCount !== 0) return null;
 
     const dir = new Reader(decrypt(readAt(fd, dirIndexOffset, dirIndexSize)));
-    const entries: NrcEntry[] = [];
+    const entries: PakEntry[] = [];
     const dirCount = dir.i32();
     for (let d = 0; d < dirCount; d++) {
       const dirName = dir.fstring();
@@ -233,11 +234,11 @@ export function parsePakIndex(pakPath: string, keyHex?: string): NrcPakIndex | n
 
 export function extractEntry(
   pakPath: string,
-  entry: NrcEntry,
+  entry: PakEntry,
   outDir: string,
   keyHex?: string,
+  mode: PakAesMode = "standard",
 ): string {
-  const key = requireKey(keyHex);
   const fd = fs.openSync(pakPath, "r");
   try {
     let data: Buffer;
@@ -246,7 +247,7 @@ export function extractEntry(
         const len = entry.size;
         const aligned = Math.ceil(len / 16) * 16;
         const start = entry.blocks.length ? entry.blocks[0].start : entry.offset;
-        data = aesDecryptCustom(readAt(fd, start, aligned), key).subarray(0, len);
+        data = aesDecrypt(readAt(fd, start, aligned), requireKey(keyHex), mode).subarray(0, len);
       } else {
         data = readAt(fd, entry.blocks.length ? entry.blocks[0].start : entry.offset, entry.size);
       }
@@ -257,7 +258,7 @@ export function extractEntry(
         let block: Buffer;
         if (entry.encrypted) {
           const aligned = Math.ceil(len / 16) * 16;
-          block = aesDecryptCustom(readAt(fd, b.start, aligned), key).subarray(0, len);
+          block = aesDecrypt(readAt(fd, b.start, aligned), requireKey(keyHex), mode).subarray(0, len);
         } else {
           block = readAt(fd, b.start, len);
         }
@@ -298,5 +299,3 @@ export function listPakFiles(pakDir: string, pakFilter?: string): string[] {
     .sort()
     .map((f) => path.join(pakDir, f));
 }
-
-export { UASSET_MAGIC };

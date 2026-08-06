@@ -10,9 +10,10 @@ export interface UmodelConfig {
   outputDir?: string;
   defaultArgs?: string[];
   timeoutMs?: number;
-  nrcPakDir?: string;
-  nrcOutputDir?: string;
-  nrcAesKey?: string;
+  pakDir?: string;
+  pakOutputDir?: string;
+  pakAesKey?: string;
+  pakAesMode?: "standard" | "bitflip";
 }
 
 function configCandidates(): string[] {

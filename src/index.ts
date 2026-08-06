@@ -7,7 +7,7 @@ import { z } from "zod";
 import { findConfigFile, loadConfig, saveConfig } from "./config.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
 import { listTree } from "./tree.js";
-import { extractEntry, listPakFiles, parsePakIndex } from "./nrc.js";
+import { extractEntry, listPakFiles, parsePakIndex } from "./pak.js";
 
 const server = new McpServer({
   name: "umodel-mcp",
@@ -71,9 +71,13 @@ server.registerTool(
       outputDir: z.string().optional().describe("Default export output directory (-out=)"),
       defaultArgs: z.array(z.string()).optional().describe("Extra args appended to every call"),
       timeoutMs: z.number().int().positive().optional().describe("Invocation timeout in ms"),
-      nrcPakDir: z.string().optional().describe("Pak directory for NRC tools (nrc_list/nrc_extract)"),
-      nrcOutputDir: z.string().optional().describe("Default output directory for nrc_extract"),
-      nrcAesKey: z.string().optional().describe("AES key (hex, 0x prefix optional) for NRC pak index decryption"),
+      pakDir: z.string().optional().describe("Default .pak directory for pak_list/pak_extract"),
+      pakOutputDir: z.string().optional().describe("Default output directory for pak_extract"),
+      pakAesKey: z.string().optional().describe("AES key (hex, 0x prefix optional) for encrypted pak index decryption"),
+      pakAesMode: z
+        .enum(["standard", "bitflip"])
+        .optional()
+        .describe("Pak AES mode: standard, or bitflip for games with custom bit-flipped AES"),
     }),
   },
   async (args) => {
@@ -113,12 +117,14 @@ server.registerTool(
     check("gameTag", !!cfg.gameTag, cfg.gameTag ?? "not set (optional; see umodel_game_list)");
     const keyCount = (cfg.aesKeys ?? []).length;
     check("aesKeys", keyCount > 0, `${keyCount} key(s) (only needed for encrypted paks)`);
-    const nrcOk = !!cfg.nrcPakDir && !!cfg.nrcAesKey && !!cfg.nrcOutputDir;
+    const pakOk = !!cfg.pakDir && !!cfg.pakOutputDir;
     check(
-      "NRC setup",
-      nrcOk,
-      cfg.nrcPakDir ? `pakDir=${cfg.nrcPakDir}, key=${cfg.nrcAesKey ? "set" : "missing"}, out=${cfg.nrcOutputDir ?? "missing"}` : "not configured (only needed for nrc_* tools)",
-      "Set nrcPakDir, nrcOutputDir and nrcAesKey via umodel_config_set to use nrc_* tools.",
+      "pak setup",
+      pakOk,
+      cfg.pakDir
+        ? `pakDir=${cfg.pakDir}, out=${cfg.pakOutputDir ?? "missing"}, key=${cfg.pakAesKey ? "set" : "none (ok for unencrypted paks)"}`
+        : "not configured (only needed for pak_list/pak_extract)",
+      "Set pakDir and pakOutputDir (plus pakAesKey for encrypted paks) via umodel_config_set.",
     );
     if (problems.length === 0) lines.push("\nAll checks passed.");
     else lines.push("\nNext steps:\n" + problems.map((p, i) => `${i + 1}. ${p}`).join("\n"));
@@ -370,26 +376,29 @@ server.registerTool(
 );
 
 server.registerTool(
-  "nrc_list",
+  "pak_list",
   {
-    title: "List files inside NRC (洛克王国：世界) paks",
+    title: "List files inside UE .pak archives",
     description:
-      "Decrypt the custom-encrypted index of NRC pak files and list matching asset paths. " +
-      "Use this before nrc_extract to locate assets (meshes/textures/animations).",
+      "Parse UE .pak index files (AES-encrypted indexes supported, including games using custom bit-flipped AES) and list asset paths matching the filters. " +
+      "Works without umodel. Use this before pak_extract to locate assets (meshes/textures/animations).",
     inputSchema: z.object({
       filters: z.array(z.string()).min(1).describe("Case-insensitive substrings to match, e.g. ['SKM_PC2']"),
-      pakDir: z.string().optional().describe("Pak directory. Defaults to configured nrcPakDir."),
+      pakDir: z.string().optional().describe("Pak directory. Defaults to configured pakDir."),
       pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
+      aesMode: z
+        .enum(["standard", "bitflip"])
+        .optional()
+        .describe("Index decryption mode. Overrides configured pakAesMode (default standard)."),
       limit: z.number().int().positive().optional().describe("Max entries to return (default 200)"),
       json: jsonFlag,
     }),
   },
-  async ({ filters, pakDir, pakFilter, limit, json }) => {
+  async ({ filters, pakDir, pakFilter, aesMode, limit, json }) => {
     const cfg = loadConfig();
-    const dir = pakDir ?? cfg.nrcPakDir;
-    if (!cfg.nrcAesKey)
-      return text("No AES key configured for NRC paks: set nrcAesKey via umodel_config_set or in umodel-mcp.json.");
-    if (!dir) return text("No pak directory given: pass 'pakDir' or configure nrcPakDir.");
+    const dir = pakDir ?? cfg.pakDir;
+    const mode = aesMode ?? cfg.pakAesMode ?? "standard";
+    if (!dir) return text("No pak directory given: pass 'pakDir' or configure pakDir.");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
     const cap = limit ?? 200;
@@ -400,7 +409,7 @@ server.registerTool(
       if (matches.length >= cap) break;
       let index;
       try {
-        index = parsePakIndex(p, cfg.nrcAesKey);
+        index = parsePakIndex(p, cfg.pakAesKey, mode);
       } catch (e) {
         errors.push(`${path.basename(p)}: ${e}`);
         continue;
@@ -423,8 +432,11 @@ server.registerTool(
           2,
         ),
       );
-    if (matches.length === 0)
-      return text(`No matches for [${filters.join(", ")}] after scanning ${scanned}/${paks.length} paks in ${dir}`);
+    if (matches.length === 0) {
+      let msg = `No matches for [${filters.join(", ")}] after scanning ${scanned}/${paks.length} paks in ${dir}`;
+      if (errors.length) msg += `\n\nErrors (first 10):\n${errors.slice(0, 10).join("\n")}`;
+      return text(msg);
+    }
     let msg =
       `Scanned ${scanned}/${paks.length} paks in ${dir}\nMatches for [${filters.join(", ")}]:\n` +
       matches.map((m) => `${m.pak} :: ${m.path}  (${m.size} bytes)`).join("\n") +
@@ -435,29 +447,32 @@ server.registerTool(
 );
 
 server.registerTool(
-  "nrc_extract",
+  "pak_extract",
   {
-    title: "Extract files from NRC (洛克王国：世界) paks",
+    title: "Extract files from UE .pak archives",
     description:
-      "Extract raw .uasset/.uexp files from custom-encrypted NRC paks. " +
-      "The extracted loose files can then be converted with umodel_export (point it at the output directory).",
+      "Extract raw .uasset/.uexp files from UE .pak archives by parsing the index directly (AES-encrypted indexes supported, including custom bit-flipped AES). " +
+      "Works without umodel. The extracted loose files can then be converted with umodel_export (point it at the output directory).",
     inputSchema: z.object({
       filters: z.array(z.string()).min(1).describe("Case-insensitive substrings to match, e.g. ['SKM_PC2']"),
-      pakDir: z.string().optional().describe("Pak directory. Defaults to configured nrcPakDir."),
-      out: z.string().optional().describe("Output directory. Defaults to configured nrcOutputDir."),
+      pakDir: z.string().optional().describe("Pak directory. Defaults to configured pakDir."),
+      out: z.string().optional().describe("Output directory. Defaults to configured pakOutputDir."),
       pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
+      aesMode: z
+        .enum(["standard", "bitflip"])
+        .optional()
+        .describe("Decryption mode. Overrides configured pakAesMode (default standard)."),
       maxFiles: z.number().int().positive().optional().describe("Max files to extract (default 200)"),
       json: jsonFlag,
     }),
   },
-  async ({ filters, pakDir, out, pakFilter, maxFiles, json }) => {
+  async ({ filters, pakDir, out, pakFilter, aesMode, maxFiles, json }) => {
     const cfg = loadConfig();
-    const dir = pakDir ?? cfg.nrcPakDir;
-    const outDir = out ?? cfg.nrcOutputDir;
-    if (!cfg.nrcAesKey)
-      return text("No AES key configured for NRC paks: set nrcAesKey via umodel_config_set or in umodel-mcp.json.");
-    if (!dir) return text("No pak directory given: pass 'pakDir' or configure nrcPakDir.");
-    if (!outDir) return text("No output directory given: pass 'out' or configure nrcOutputDir.");
+    const dir = pakDir ?? cfg.pakDir;
+    const outDir = out ?? cfg.pakOutputDir;
+    const mode = aesMode ?? cfg.pakAesMode ?? "standard";
+    if (!dir) return text("No pak directory given: pass 'pakDir' or configure pakDir.");
+    if (!outDir) return text("No output directory given: pass 'out' or configure pakOutputDir.");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
     const cap = maxFiles ?? 200;
@@ -467,7 +482,7 @@ server.registerTool(
       if (extracted.length >= cap) break;
       let index;
       try {
-        index = parsePakIndex(p, cfg.nrcAesKey);
+        index = parsePakIndex(p, cfg.pakAesKey, mode);
       } catch (err) {
         warnings.push(`${path.basename(p)}: ${err}`);
         continue;
@@ -483,7 +498,7 @@ server.registerTool(
           continue;
         }
         try {
-          extractEntry(p, e, outDir, cfg.nrcAesKey);
+          extractEntry(p, e, outDir, cfg.pakAesKey, mode);
           extracted.push({ path: e.path, size: e.size });
         } catch (err) {
           warnings.push(`${e.path}: ${err}`);
