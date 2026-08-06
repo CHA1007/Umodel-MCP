@@ -3,7 +3,7 @@
 面向 [umodel（UE Viewer）](https://www.gildor.org/en/projects/umodel) 的 MCP 服务器，
 让 Pi / 任意 MCP 客户端可以通过自然语言完成 Unreal Engine 游戏资源的**列表、解包、导出**操作。
 
-## 功能（9 个工具）
+## 功能（12 个工具）
 
 | 工具 | 对应 umodel 命令 | 说明 |
 |------|------------------|------|
@@ -15,6 +15,9 @@
 | `umodel_package_info` | `-pkginfo` | 查看包信息（name/export 表） |
 | `umodel_export` | `-export` | 导出网格/贴图/动画/声音（psk、gltf、png、dds…） |
 | `umodel_save` | `-save` | 原样拷出原始包文件（.upk + .uexp/.ubulk） |
+| `umodel_list_output` | — | 查看导出结果目录树（含文件大小） |
+| `nrc_list` | — | 解密 NRC（洛克王国：世界）pak 索引并搜索资产路径 |
+| `nrc_extract` | — | 从 NRC 加密 pak 中提取原始 .uasset/.uexp 文件 |
 
 ## 安装与构建
 
@@ -41,7 +44,10 @@ npm run build
   "aesKeys": ["0xAAAAAAAA..."],
   "outputDir": "C:/export",
   "defaultArgs": [],
-  "timeoutMs": 300000
+  "timeoutMs": 300000,
+  "nrcPakDir": "D:/Games/NRC/Content/Paks",
+  "nrcOutputDir": "C:/export/nrc",
+  "nrcAesKey": "0xAAAAAAAA..."
 }
 ```
 
@@ -78,6 +84,11 @@ umodel_game_list     { tags: true }                 # 查看可用 -game= 标签
 umodel_list_objects  { package: "pakchunk0.pak", gameTag: "ue4.27", aesKeys: ["0x..."] }
 umodel_export        { package: "pakchunk0", textureFormat: "png", sounds: true, out: "C:/export" }
 umodel_save          { package: "*", out: "C:/raw" } # 原样解包
+umodel_list_output   { directory: "C:/export" }      # 查看导出结果
+
+# NRC（洛克王国：世界）工作流：先搜索再提取，提取出的散文件可再交给 umodel_export 转换
+nrc_list     { filters: ["SKM_PC2"] }
+nrc_extract  { filters: ["SKM_PC2"], out: "C:/export/nrc" }
 ```
 
 ## 说明
@@ -85,3 +96,16 @@ umodel_save          { package: "*", out: "C:/raw" } # 原样解包
 - 命令行参数以 UEViewer 官方源码（`UmodelTool/Main.cpp`）为准。
 - 加密 pak 需要通过 `aesKeys`（或 umodel-mcp.json）提供 AES key。
 - 导出结果默认写入 `outputDir`，工具返回中会包含实际执行的完整命令行，便于排查。
+
+## NRC（洛克王国：世界）支持
+
+该游戏的 pak 使用了自定义加密的索引（字节序翻转 + 位翻转的 AES-256-ECB），
+umodel 无法直接读取。`nrc_list` / `nrc_extract` 内置了对应的解密与索引解析：
+
+1. 在配置中设置 `nrcPakDir`（pak 目录）、`nrcOutputDir`（提取输出目录）和 `nrcAesKey`（十六进制密钥）。
+2. `nrc_list` 按子串过滤搜索包内资产路径。
+3. `nrc_extract` 提取原始 `.uasset/.uexp`，支持 None/Zlib/Gzip 压缩与条目级加密。
+4. 提取出的散文件可把目录指给 `umodel_export` 继续转换为 gltf/png 等格式。
+
+出于安全考虑，AES 密钥不在源码中内置，必须由使用者自行配置；请避免将含密钥的
+`umodel-mcp.json` 提交到仓库（本项目 `.gitignore` 已忽略该文件）。
