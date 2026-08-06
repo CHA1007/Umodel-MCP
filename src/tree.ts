@@ -62,12 +62,12 @@ function formatSize(bytes: number): string {
 
 function render(node: Node, indent: string, lines: string[], budget: { left: number }): void {
   if (budget.left <= 0) {
-    lines.push(`${indent}... (truncated)`);
+    lines.push(`${indent}...（已截断）`);
     return;
   }
   for (const c of node.children) {
     if (budget.left <= 0) {
-      lines.push(`${indent}... (truncated)`);
+      lines.push(`${indent}...（已截断）`);
       return;
     }
     budget.left--;

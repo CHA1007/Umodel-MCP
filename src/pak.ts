@@ -11,7 +11,7 @@ export type PakAesMode = "standard" | "bitflip";
 function requireKey(keyHex?: string): Buffer {
   if (!keyHex) {
     throw new Error(
-      "pakAesKey is not configured. Set it via umodel_config_set or in umodel-mcp.json (hex, 0x prefix optional).",
+      "未配置 AES key，无法解密 pak 索引。请先向用户询问 AES key，然后用 umodel_session_set { pakAesKey: \"0x...\" } 记住，或在调用时传入 aesKey 参数（十六进制，0x 前缀可选）。",
     );
   }
   return Buffer.from(keyHex.replace(/^0x/, ""), "hex");

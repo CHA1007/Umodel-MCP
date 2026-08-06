@@ -5,6 +5,7 @@ import type { PakAesMode } from "./pak.js";
 
 export interface Session {
   umodelExe?: string;
+  umodelExeConfirmed?: boolean;
   gamePath?: string;
   gameTag?: string;
   aesKeys?: string[];
@@ -23,7 +24,7 @@ export function resolveOutputDir(): string {
   return session.outputDir ?? defaultOutputDir();
 }
 
-const EXE_NAMES = new Set(["umodel.exe", "umodel_64.exe", "umodel32.exe"]);
+const EXE_PATTERN = /^umodel.*\.exe$/i;
 const DIR_HINT = /umodel|ue.?viewer/i;
 
 export interface FoundExe {
@@ -59,7 +60,7 @@ export function findUmodelExes(extraRoots?: string[]): FoundExe[] {
         if (budget.visits <= 0 || found.size >= 30) return;
         const full = path.join(dir, e.name);
         if (e.isFile()) {
-          if (EXE_NAMES.has(e.name.toLowerCase())) add(full);
+          if (EXE_PATTERN.test(e.name)) add(full);
         } else if (e.isDirectory()) {
           const childHinted = DIR_HINT.test(e.name);
           if (deep || childHinted) rec(full, depth + 1, deep || childHinted);
@@ -86,9 +87,14 @@ export function findUmodelExes(extraRoots?: string[]): FoundExe[] {
   const pathEnv = process.env.PATH ?? process.env.Path ?? "";
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
-    for (const name of EXE_NAMES) {
-      const full = path.join(dir, name);
-      if (fs.existsSync(full)) add(full);
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.isFile() && EXE_PATTERN.test(e.name)) add(path.join(dir, e.name));
     }
   }
 
