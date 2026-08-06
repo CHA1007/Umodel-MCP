@@ -271,8 +271,12 @@ export function extractEntry(
       }
       data = Buffer.concat(parts);
     }
-    const clean = entry.path.replace(/^(\.\.\/)+/, "");
-    const outPath = path.join(outDir, clean);
+    const root = path.resolve(outDir);
+    const rel = entry.path.replace(/^([A-Za-z]:)?[\\/]+/, "");
+    const outPath = path.resolve(root, rel);
+    if (!outPath.startsWith(root + path.sep)) {
+      throw new Error(`unsafe entry path escapes output directory: ${entry.path}`);
+    }
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, data);
     return outPath;

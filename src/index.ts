@@ -60,6 +60,9 @@ server.registerTool(
       outputDir: z.string().optional().describe("Default export output directory (-out=)"),
       defaultArgs: z.array(z.string()).optional().describe("Extra args appended to every call"),
       timeoutMs: z.number().int().positive().optional().describe("Invocation timeout in ms"),
+      nrcPakDir: z.string().optional().describe("Pak directory for NRC tools (nrc_list/nrc_extract)"),
+      nrcOutputDir: z.string().optional().describe("Default output directory for nrc_extract"),
+      nrcAesKey: z.string().optional().describe("AES key (hex, 0x prefix optional) for NRC pak index decryption"),
     }),
   },
   async (args) => {
@@ -267,7 +270,9 @@ server.registerTool(
     const cfg = loadConfig();
     const out = opts.out ?? cfg.outputDir;
     if (!out) return text("No output directory given: pass 'out' or configure outputDir.");
-    const args = ["-save", ...commonArgs(opts, cfg), pkg];
+    const args = ["-save"];
+    args.push(`-out=${out}`);
+    args.push(...commonArgs(opts, cfg), pkg);
     const r = await runUmodel(cfg, args, timeoutMs);
     let msg = formatResult(r);
     if (r.exitCode === 0) {
