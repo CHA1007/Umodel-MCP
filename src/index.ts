@@ -300,6 +300,8 @@ server.registerTool(
   async ({ filters, pakDir, pakFilter, limit }) => {
     const cfg = loadConfig();
     const dir = pakDir ?? cfg.nrcPakDir;
+    if (!cfg.nrcAesKey)
+      return text("No AES key configured for NRC paks: set nrcAesKey via umodel_config_set or in umodel-mcp.json.");
     if (!dir) return text("No pak directory given: pass 'pakDir' or configure nrcPakDir.");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
@@ -354,6 +356,8 @@ server.registerTool(
     const cfg = loadConfig();
     const dir = pakDir ?? cfg.nrcPakDir;
     const outDir = out ?? cfg.nrcOutputDir;
+    if (!cfg.nrcAesKey)
+      return text("No AES key configured for NRC paks: set nrcAesKey via umodel_config_set or in umodel-mcp.json.");
     if (!dir) return text("No pak directory given: pass 'pakDir' or configure nrcPakDir.");
     if (!outDir) return text("No output directory given: pass 'out' or configure nrcOutputDir.");
     const paks = listPakFiles(dir, pakFilter);

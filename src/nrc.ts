@@ -3,14 +3,18 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 
-const DEFAULT_KEY = Buffer.from(
-  "34254D23E47299B3B7F6C4CFDE9BD0688703446D9D8F37B2EBDDDE5B06ED5ADF",
-  "hex",
-);
-
 const PAK_MAGIC = 0x5a6f12e1;
 const TAIL_SIZE = 0xcd;
 const UASSET_MAGIC = 0x9e2a83c1;
+
+function requireKey(keyHex?: string): Buffer {
+  if (!keyHex) {
+    throw new Error(
+      "nrcAesKey is not configured. Set it via umodel_config_set or in umodel-mcp.json (hex, 0x prefix optional).",
+    );
+  }
+  return Buffer.from(keyHex.replace(/^0x/, ""), "hex");
+}
 
 export interface NrcEntry {
   pak: string;
@@ -166,7 +170,7 @@ function decodeEntry(blob: Buffer, offset: number, methods: string[]): Omit<NrcE
 }
 
 export function parsePakIndex(pakPath: string, keyHex?: string): NrcPakIndex | null {
-  const key = keyHex ? Buffer.from(keyHex.replace(/^0x/, ""), "hex") : DEFAULT_KEY;
+  const key = requireKey(keyHex);
   const fd = fs.openSync(pakPath, "r");
   try {
     const stat = fs.fstatSync(fd);
@@ -233,7 +237,7 @@ export function extractEntry(
   outDir: string,
   keyHex?: string,
 ): string {
-  const key = keyHex ? Buffer.from(keyHex.replace(/^0x/, ""), "hex") : DEFAULT_KEY;
+  const key = requireKey(keyHex);
   const fd = fs.openSync(pakPath, "r");
   try {
     let data: Buffer;
