@@ -24,6 +24,16 @@ export function resolveOutputDir(): string {
   return session.outputDir ?? defaultOutputDir();
 }
 
+export function applyOverrides(opts: { gamePath?: string; gameTag?: string; aesKeys?: string[] }): void {
+  if (opts.gamePath && fs.existsSync(opts.gamePath)) session.gamePath = opts.gamePath;
+  if (opts.gameTag) session.gameTag = opts.gameTag;
+  if (opts.aesKeys?.length) session.aesKeys = opts.aesKeys;
+}
+
+export function rememberDirectory(dir?: string): void {
+  if (dir && fs.existsSync(dir)) session.gamePath = dir;
+}
+
 const EXE_PATTERN = /^umodel.*\.exe$/i;
 const DIR_HINT = /umodel|ue.?viewer/i;
 

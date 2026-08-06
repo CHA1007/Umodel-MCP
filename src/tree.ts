@@ -48,7 +48,7 @@ function buildTree(dir: string, depth: number, maxDepth: number): Node {
   return node;
 }
 
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let v = bytes / 1024;

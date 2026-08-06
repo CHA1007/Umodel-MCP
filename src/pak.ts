@@ -8,6 +8,13 @@ const TAIL_SIZE = 0xcd;
 
 export type PakAesMode = "standard" | "bitflip";
 
+export interface PakKey {
+  keyHex?: string;
+  mode: PakAesMode;
+}
+
+export const SUPPORTED_COMPRESSION = new Set(["none", "zlib", "gzip"]);
+
 function requireKey(keyHex?: string): Buffer {
   if (!keyHex) {
     throw new Error(
@@ -179,7 +186,8 @@ function decodeEntry(blob: Buffer, offset: number, methods: string[]): Omit<PakE
   };
 }
 
-export function parsePakIndex(pakPath: string, keyHex?: string, mode: PakAesMode = "standard"): PakIndex | null {
+export function parsePakIndex(pakPath: string, key: PakKey = { mode: "standard" }): PakIndex | null {
+  const { keyHex, mode } = key;
   const fd = fs.openSync(pakPath, "r");
   try {
     const stat = fs.fstatSync(fd);
@@ -202,7 +210,7 @@ export function parsePakIndex(pakPath: string, keyHex?: string, mode: PakAesMode
     const decrypt = (buf: Buffer) => (encryptedIndex ? aesDecrypt(buf, requireKey(keyHex), mode) : buf);
     const primary = new Reader(decrypt(readAt(fd, indexOffset, indexSize)));
     const mountPoint = primary.fstring();
-    const fileCount = primary.i32();
+    primary.skip(4);
     primary.skip(8);
     const hasPathHash = primary.i32();
     if (!hasPathHash) return null;
@@ -233,7 +241,6 @@ export function parsePakIndex(pakPath: string, keyHex?: string, mode: PakAesMode
         entries.push({ pak: path.basename(pakPath), path: normalizePakPath(full), ...decoded });
       }
     }
-    void fileCount;
     return { pak: path.basename(pakPath), version, mountPoint, compressionMethods, entries };
   } finally {
     fs.closeSync(fd);
@@ -244,9 +251,9 @@ export function extractEntry(
   pakPath: string,
   entry: PakEntry,
   outDir: string,
-  keyHex?: string,
-  mode: PakAesMode = "standard",
+  key: PakKey = { mode: "standard" },
 ): string {
+  const { keyHex, mode } = key;
   const fd = fs.openSync(pakPath, "r");
   try {
     let data: Buffer;

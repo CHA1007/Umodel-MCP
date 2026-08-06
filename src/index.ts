@@ -4,10 +4,10 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { defaultOutputDir, findUmodelExes, resolveOutputDir, session } from "./session.js";
+import { applyOverrides, defaultOutputDir, findUmodelExes, rememberDirectory, resolveOutputDir, session } from "./session.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
-import { listTree } from "./tree.js";
-import { detectPakEncryption, extractEntry, listPakFiles, parsePakIndex } from "./pak.js";
+import { formatSize, listTree } from "./tree.js";
+import { detectPakEncryption, extractEntry, listPakFiles, parsePakIndex, SUPPORTED_COMPRESSION, type PakKey } from "./pak.js";
 
 const server = new McpServer({
   name: "umodel-mcp",
@@ -35,18 +35,6 @@ function filterLines(stdout: string, filter?: string, skip?: number, limit?: num
   const start = skip ?? 0;
   const cap = limit ?? Math.min(500, Math.max(matched.length - start, 0));
   return { total: matched.length, lines: matched.slice(start, start + cap) };
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = bytes / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${units[i]}`;
 }
 
 const commonSchema = {
@@ -263,7 +251,7 @@ function preflightGameTag(pkg: string | undefined, gamePath: string | undefined,
     for (const p of paks) {
       let index;
       try {
-        index = parsePakIndex(p, session.pakAesKey, session.pakAesMode ?? "standard");
+        index = parsePakIndex(p, { keyHex: session.pakAesKey, mode: session.pakAesMode ?? "standard" });
       } catch {
         continue;
       }
@@ -283,6 +271,37 @@ function preflightGameTag(pkg: string | undefined, gamePath: string | undefined,
     }
   }
   return null;
+}
+
+function preflightUmodel(
+  pkg: string,
+  opts: { gamePath?: string; gameTag?: string; aesKeys?: string[] },
+): ReturnType<typeof errorText> | null {
+  applyOverrides(opts);
+  const err = preflightAes(pkg, opts.gamePath, opts.aesKeys) ?? preflightGameTag(pkg, opts.gamePath, opts.gameTag) ?? preflightExe();
+  return err ? errorText(err) : null;
+}
+
+function scanPakIndexes(
+  paks: string[],
+  key: PakKey,
+  onIndex: (pakPath: string, index: NonNullable<ReturnType<typeof parsePakIndex>>) => boolean,
+): { scanned: number; errors: string[] } {
+  let scanned = 0;
+  const errors: string[] = [];
+  for (const p of paks) {
+    let index;
+    try {
+      index = parsePakIndex(p, key);
+    } catch (e) {
+      errors.push(`${path.basename(p)}: ${e}`);
+      continue;
+    }
+    if (!index) continue;
+    scanned++;
+    if (!onIndex(p, index)) break;
+  }
+  return { scanned, errors };
 }
 
 server.registerTool(
@@ -351,7 +370,7 @@ server.registerTool(
     }),
   },
   async ({ directory, extensions, limit, json }) => {
-    if (directory && fs.existsSync(directory)) session.gamePath = directory;
+    rememberDirectory(directory);
     const dir = directory ?? session.gamePath;
     if (!dir) return errorText("未提供目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     if (!fs.existsSync(dir)) return errorText(`目录不存在: ${dir}`);
@@ -423,13 +442,9 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, filter, skip, limit, json, ...rest }) => {
-    const aesErr = preflightAes(pkg, rest.gamePath, rest.aesKeys);
-    if (aesErr) return errorText(aesErr);
-    const tagErr = preflightGameTag(pkg, rest.gamePath, rest.gameTag);
-    if (tagErr) return errorText(tagErr);
-    const exeErr = preflightExe();
-    if (exeErr) return errorText(exeErr);
-    const args = ["-list", ...commonArgs(rest, session), pkg];
+    const blocked = preflightUmodel(pkg, rest);
+    if (blocked) return blocked;
+    const args = ["-list", ...commonArgs(session), pkg];
     const r = await runUmodel(session.umodelExe, args);
     const ok = r.exitCode === 0;
     const paginated = filter !== undefined || skip !== undefined || limit !== undefined;
@@ -446,9 +461,9 @@ server.registerTool(
     }
     if (paginated) {
       const { total, lines } = filterLines(r.stdout, filter, skip, limit);
-      let msg = `$ ${r.command}\n退出码: ${r.exitCode}${r.timedOut ? "（超时）" : ""}`;
-      msg += `\n匹配 ${total} 行，本次返回 ${lines.length} 行：\n${lines.join("\n")}`;
-      if (r.stderr.trim()) msg += `\n--- 标准错误 ---\n${r.stderr}`;
+      const msg =
+        formatResult({ ...r, stdout: lines.join("\n") }) +
+        `\n\n共匹配 ${total} 行，本次返回 ${lines.length} 行`;
       return respond(msg, ok);
     }
     return respond(formatResult(r), ok);
@@ -467,13 +482,9 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, json, ...rest }) => {
-    const aesErr = preflightAes(pkg, rest.gamePath, rest.aesKeys);
-    if (aesErr) return errorText(aesErr);
-    const tagErr = preflightGameTag(pkg, rest.gamePath, rest.gameTag);
-    if (tagErr) return errorText(tagErr);
-    const exeErr = preflightExe();
-    if (exeErr) return errorText(exeErr);
-    const args = ["-pkginfo", ...commonArgs(rest, session), pkg];
+    const blocked = preflightUmodel(pkg, rest);
+    if (blocked) return blocked;
+    const args = ["-pkginfo", ...commonArgs(session), pkg];
     const r = await runUmodel(session.umodelExe, args);
     const ok = r.exitCode === 0;
     if (json) return respond(JSON.stringify(r, null, 2), ok);
@@ -512,12 +523,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
-    const aesErr = preflightAes(pkg, opts.gamePath, opts.aesKeys);
-    if (aesErr) return errorText(aesErr);
-    const tagErr = preflightGameTag(pkg, opts.gamePath, opts.gameTag);
-    if (tagErr) return errorText(tagErr);
-    const exeErr = preflightExe();
-    if (exeErr) return errorText(exeErr);
+    const blocked = preflightUmodel(pkg, opts);
+    if (blocked) return blocked;
     const args: string[] = ["-export"];
     if (opts.meshFormat) args.push(`-${opts.meshFormat}`);
     if (opts.textureFormat === "png") args.push("-png");
@@ -531,7 +538,7 @@ server.registerTool(
     if (opts.noOverwrite) args.push("-nooverwrite");
     const out = opts.out ?? resolveOutputDir();
     args.push(`-out=${out}`);
-    args.push(...commonArgs(opts, session));
+    args.push(...commonArgs(session));
     for (const o of opts.objects ?? []) args.push(`-obj=${o}`);
     args.push(pkg);
     if (opts.object) args.push(opts.object);
@@ -564,14 +571,10 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
-    const aesErr = preflightAes(pkg, opts.gamePath, opts.aesKeys);
-    if (aesErr) return errorText(aesErr);
-    const tagErr = preflightGameTag(pkg, opts.gamePath, opts.gameTag);
-    if (tagErr) return errorText(tagErr);
-    const exeErr = preflightExe();
-    if (exeErr) return errorText(exeErr);
+    const blocked = preflightUmodel(pkg, opts);
+    if (blocked) return blocked;
     const out = opts.out ?? resolveOutputDir();
-    const args = ["-save", `-out=${out}`, ...commonArgs(opts, session), pkg];
+    const args = ["-save", `-out=${out}`, ...commonArgs(session), pkg];
     const r = await runUmodel(session.umodelExe, args, timeoutMs);
     const ok = r.exitCode === 0;
     if (json) return respond(JSON.stringify({ ...r, out }, null, 2), ok);
@@ -609,38 +612,26 @@ server.registerTool(
     }),
   },
   async ({ filters, pakDir, pakFilter, aesKey, aesMode, limit, json }) => {
-    if (pakDir && fs.existsSync(pakDir)) session.gamePath = pakDir;
+    rememberDirectory(pakDir);
     if (aesKey) session.pakAesKey = aesKey;
     if (aesMode) session.pakAesMode = aesMode;
     const dir = pakDir ?? session.gamePath;
-    const key = aesKey ?? session.pakAesKey;
-    const mode = aesMode ?? session.pakAesMode ?? "standard";
+    const key: PakKey = { keyHex: aesKey ?? session.pakAesKey, mode: aesMode ?? session.pakAesMode ?? "standard" };
     if (!dir) return errorText("未提供 pak 目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return errorText(`在 ${dir} 中未找到 .pak 文件`);
     const cap = limit ?? 200;
     const matches: { pak: string; path: string; size: number }[] = [];
-    const errors: string[] = [];
-    let scanned = 0;
-    for (const p of paks) {
-      if (matches.length >= cap) break;
-      let index;
-      try {
-        index = parsePakIndex(p, key, mode);
-      } catch (e) {
-        errors.push(`${path.basename(p)}: ${e}`);
-        continue;
-      }
-      if (!index) continue;
-      scanned++;
+    const { scanned, errors } = scanPakIndexes(paks, key, (_pakPath, index) => {
       for (const e of index.entries) {
-        if (matches.length >= cap) break;
+        if (matches.length >= cap) return false;
         const lower = e.path.toLowerCase();
         if (filters.some((f) => lower.includes(f.toLowerCase()))) {
           matches.push({ pak: e.pak, path: e.path, size: e.size });
         }
       }
-    }
+      return matches.length < cap;
+    });
     if (json)
       return respond(
         JSON.stringify(
@@ -690,46 +681,36 @@ server.registerTool(
     }),
   },
   async ({ filters, pakDir, out, pakFilter, aesKey, aesMode, maxFiles, json }) => {
-    if (pakDir && fs.existsSync(pakDir)) session.gamePath = pakDir;
+    rememberDirectory(pakDir);
     if (aesKey) session.pakAesKey = aesKey;
     if (aesMode) session.pakAesMode = aesMode;
     const dir = pakDir ?? session.gamePath;
     const outDir = out ?? path.join(resolveOutputDir(), "pak");
-    const key = aesKey ?? session.pakAesKey;
-    const mode = aesMode ?? session.pakAesMode ?? "standard";
+    const key: PakKey = { keyHex: aesKey ?? session.pakAesKey, mode: aesMode ?? session.pakAesMode ?? "standard" };
     if (!dir) return errorText("未提供 pak 目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return errorText(`在 ${dir} 中未找到 .pak 文件`);
     const cap = maxFiles ?? 200;
     const extracted: { path: string; size: number }[] = [];
     const warnings: string[] = [];
-    for (const p of paks) {
-      if (extracted.length >= cap) break;
-      let index;
-      try {
-        index = parsePakIndex(p, key, mode);
-      } catch (err) {
-        warnings.push(`${path.basename(p)}: ${err}`);
-        continue;
-      }
-      if (!index) continue;
+    scanPakIndexes(paks, key, (pakPath, index) => {
       for (const e of index.entries) {
-        if (extracted.length >= cap) break;
+        if (extracted.length >= cap) return false;
         const lower = e.path.toLowerCase();
         if (!filters.some((f) => lower.includes(f.toLowerCase()))) continue;
-        const m = e.method.toLowerCase();
-        if (m !== "none" && m !== "zlib" && m !== "gzip") {
+        if (!SUPPORTED_COMPRESSION.has(e.method.toLowerCase())) {
           warnings.push(`${e.path}: unsupported compression (${e.method}), skipped`);
           continue;
         }
         try {
-          extractEntry(p, e, outDir, key, mode);
+          extractEntry(pakPath, e, outDir, key);
           extracted.push({ path: e.path, size: e.size });
         } catch (err) {
           warnings.push(`${e.path}: ${err}`);
         }
       }
-    }
+      return extracted.length < cap;
+    });
     if (json)
       return respond(
         JSON.stringify({ outDir, filters, truncated: extracted.length >= cap, extracted, warnings }, null, 2),

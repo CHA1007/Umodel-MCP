@@ -67,19 +67,11 @@ function quoteArg(a: string): string {
   return /[\s"']/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
 }
 
-export function commonArgs(
-  opts: { gamePath?: string; gameTag?: string; aesKeys?: string[] },
-  s: Session,
-): string[] {
+export function commonArgs(s: Session): string[] {
   const args: string[] = [];
-  if (opts.gamePath && fs.existsSync(opts.gamePath)) s.gamePath = opts.gamePath;
-  if (opts.gameTag) s.gameTag = opts.gameTag;
-  if (opts.aesKeys?.length) s.aesKeys = opts.aesKeys;
-  const p = opts.gamePath ?? s.gamePath;
-  if (p) args.push(`-path=${p}`);
-  const tag = opts.gameTag ?? s.gameTag;
-  if (tag) args.push(`-game=${tag}`);
-  for (const k of opts.aesKeys ?? s.aesKeys ?? []) args.push(`-aes=${k}`);
+  if (s.gamePath) args.push(`-path=${s.gamePath}`);
+  if (s.gameTag) args.push(`-game=${s.gameTag}`);
+  for (const k of s.aesKeys ?? []) args.push(`-aes=${k}`);
   return args;
 }
 
