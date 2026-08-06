@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { findConfigFile, loadConfig, saveConfig } from "./config.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
+import { listTree } from "./tree.js";
 
 const server = new McpServer({
   name: "umodel-mcp",
@@ -238,6 +239,7 @@ server.registerTool(
     let msg = formatResult(r);
     if (r.exitCode === 0 && out) {
       msg += `\n\nExported files were written under: ${out}`;
+      msg += `\n\n--- output structure ---\n${listTree(out, { maxEntries: 100 })}`;
     }
     return text(msg);
   },
@@ -267,8 +269,32 @@ server.registerTool(
     const args = ["-save", ...commonArgs(opts, cfg), pkg];
     const r = await runUmodel(cfg, args, timeoutMs);
     let msg = formatResult(r);
-    if (r.exitCode === 0) msg += `\n\nSaved packages under: ${out}`;
+    if (r.exitCode === 0) {
+      msg += `\n\nSaved packages under: ${out}`;
+      msg += `\n\n--- output structure ---\n${listTree(out, { maxEntries: 100 })}`;
+    }
     return text(msg);
+  },
+);
+
+server.registerTool(
+  "umodel_list_output",
+  {
+    title: "Show exported files directory tree",
+    description:
+      "List the folder structure and files produced by umodel_export/umodel_save, with sizes. " +
+      "Use this after an export to see what was unpacked.",
+    inputSchema: z.object({
+      directory: z.string().optional().describe("Directory to inspect. Defaults to configured outputDir."),
+      maxDepth: z.number().int().positive().optional().describe("Max folder depth to expand (default 8)"),
+      maxEntries: z.number().int().positive().optional().describe("Max entries to show (default 400)"),
+    }),
+  },
+  async ({ directory, maxDepth, maxEntries }) => {
+    const cfg = loadConfig();
+    const dir = directory ?? cfg.outputDir;
+    if (!dir) return text("No directory given: pass 'directory' or configure outputDir.");
+    return text(listTree(dir, { maxDepth, maxEntries }));
   },
 );
 
