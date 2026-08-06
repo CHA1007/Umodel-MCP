@@ -24,6 +24,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "test": "tsx --test src/pak.test.ts src/session.test.ts src/tree.test.ts src/umodel.test.ts",
     "start": "node dist/index.js",
     "prepublishOnly": "npm run build"
   },
