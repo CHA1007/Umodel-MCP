@@ -7,7 +7,7 @@ import { z } from "zod";
 import { defaultOutputDir, findUmodelExes, resolveOutputDir, session } from "./session.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
 import { listTree } from "./tree.js";
-import { extractEntry, listPakFiles, parsePakIndex } from "./pak.js";
+import { detectPakEncryption, extractEntry, listPakFiles, parsePakIndex } from "./pak.js";
 
 const server = new McpServer({
   name: "umodel-mcp",
@@ -167,6 +167,34 @@ server.registerTool(
   },
 );
 
+function preflightAes(pkg: string | undefined, gamePath: string | undefined, keys?: string[]): string | null {
+  if ((keys ?? session.aesKeys ?? []).length > 0) return null;
+  const targets: string[] = [];
+  const gp = gamePath ?? session.gamePath;
+  if (gp && fs.existsSync(gp)) targets.push(gp);
+  if (pkg && pkg.toLowerCase().endsWith(".pak") && fs.existsSync(pkg)) targets.push(pkg);
+  const bad = new Set<string>();
+  for (const t of targets) {
+    let files: string[];
+    try {
+      files = fs.statSync(t).isDirectory() ? listPakFiles(t).slice(0, 16) : [t];
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      const info = detectPakEncryption(f);
+      if (info && (info.encryptedIndex || info.encryptedEntries)) bad.add(info.pak);
+    }
+  }
+  if (bad.size === 0) return null;
+  return (
+    `检测到加密 pak，但未提供 AES key：${[...bad].join(", ")}。\n` +
+    `此时直接调用 umodel 会弹出“输入 AES key”的 GUI 弹窗并卡住，已阻止执行。\n` +
+    `请先向用户询问 AES key，然后用 umodel_session_set { aesKeys: ["0x..."] } 记住或传入 aesKeys 参数；` +
+    `若 umodel 不支持该游戏，可改用 pak_list/pak_extract（配合 pakAesKey）。`
+  );
+}
+
 server.registerTool(
   "umodel_version",
   {
@@ -253,12 +281,30 @@ server.registerTool(
     walk(dir, 0);
 
     if (found.length === 0) return text(`No package files found under ${dir}`);
+    const encrypted: { pak: string; index: boolean; entries: boolean }[] = [];
+    for (const f of found.filter((f) => f.toLowerCase().endsWith(".pak")).slice(0, 32)) {
+      const info = detectPakEncryption(f);
+      if (info && (info.encryptedIndex || info.encryptedEntries)) {
+        encrypted.push({ pak: info.pak, index: info.encryptedIndex, entries: info.encryptedEntries });
+      }
+    }
     if (json)
-      return text(JSON.stringify({ directory: dir, count: found.length, truncated: found.length >= cap, files: found }, null, 2));
-    return text(
+      return text(
+        JSON.stringify(
+          { directory: dir, count: found.length, truncated: found.length >= cap, files: found, encryptedPaks: encrypted },
+          null,
+          2,
+        ),
+      );
+    let msg =
       `Found ${found.length}${found.length >= cap ? "+" : ""} package file(s) under ${dir}:\n` +
-        found.join("\n"),
-    );
+      found.join("\n");
+    if (encrypted.length > 0) {
+      msg +=
+        `\n\n⚠ 加密 pak（需要 AES key，否则 umodel 会弹窗卡死）：\n` +
+        encrypted.map((e) => `${e.pak} (索引${e.index ? "" : "未"}加密, 条目${e.entries ? "" : "未"}加密)`).join("\n");
+    }
+    return text(msg);
   },
 );
 
@@ -277,6 +323,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, filter, skip, limit, json, ...rest }) => {
+    const aesErr = preflightAes(pkg, rest.gamePath, rest.aesKeys);
+    if (aesErr) return text(aesErr);
     const args = ["-list", ...commonArgs(rest, session), pkg];
     const r = await runUmodel(session.umodelExe, args);
     const paginated = filter !== undefined || skip !== undefined || limit !== undefined;
@@ -313,6 +361,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, json, ...rest }) => {
+    const aesErr = preflightAes(pkg, rest.gamePath, rest.aesKeys);
+    if (aesErr) return text(aesErr);
     const args = ["-pkginfo", ...commonArgs(rest, session), pkg];
     const r = await runUmodel(session.umodelExe, args);
     if (json) return text(JSON.stringify(r, null, 2));
@@ -348,6 +398,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
+    const aesErr = preflightAes(pkg, opts.gamePath, opts.aesKeys);
+    if (aesErr) return text(aesErr);
     const args: string[] = ["-export"];
     if (opts.meshFormat) args.push(`-${opts.meshFormat}`);
     if (opts.textureFormat === "png") args.push("-png");
@@ -393,6 +445,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
+    const aesErr = preflightAes(pkg, opts.gamePath, opts.aesKeys);
+    if (aesErr) return text(aesErr);
     const out = opts.out ?? resolveOutputDir();
     const args = ["-save", `-out=${out}`, ...commonArgs(opts, session), pkg];
     const r = await runUmodel(session.umodelExe, args, timeoutMs);

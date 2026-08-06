@@ -84,6 +84,12 @@ export function formatResult(r: RunResult): string {
   const parts: string[] = [];
   parts.push(`$ ${r.command}`);
   parts.push(`exit code: ${r.exitCode}${r.timedOut ? " (TIMED OUT)" : ""}`);
+  if (r.timedOut) {
+    parts.push(
+      "提示：超时通常是 umodel 弹出了对话框在等待人工操作（输入 AES key 或选择引擎版本）。" +
+        "请确认是否缺少 aesKeys / gameTag，补全后重试；不要反复盲目重试。",
+    );
+  }
   if (r.stdout.trim()) parts.push(`--- stdout ---\n${r.stdout}`);
   if (r.stderr.trim()) parts.push(`--- stderr ---\n${r.stderr}`);
   return parts.join("\n");

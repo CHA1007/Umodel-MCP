@@ -100,6 +100,10 @@ pak_extract  { filters: ["SKM_PC2"] }
 - 列表/导出类工具均支持 `json: true` 参数，返回结构化 JSON 供程序消费；
   `umodel_list_objects` 另支持 `filter`（行级子串过滤）与 `skip`/`limit`（分页），
   适合在超大包里定位对象。
+- **弹窗防护**：umodel 遇到加密 pak 且未提供 `-aes=` 时会弹出“输入 AES key”的
+  GUI 对话框并卡死。因此 `umodel_list_packages` 扫描时会标注加密 pak；
+  `umodel_list_objects/-package_info/-export/-save` 在执行前会预检，
+  发现加密 pak 且未配置 AES key 时直接拒绝执行并提示先向用户要密钥。
 
 ## 加密 pak 支持（pak_list / pak_extract）
 

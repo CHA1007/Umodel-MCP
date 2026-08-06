@@ -290,6 +290,41 @@ export function extractEntry(
   }
 }
 
+export interface PakEncryptionInfo {
+  pak: string;
+  encryptedIndex: boolean;
+  encryptedEntries: boolean;
+}
+
+export function detectPakEncryption(pakPath: string): PakEncryptionInfo | null {
+  let fd: number;
+  try {
+    fd = fs.openSync(pakPath, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.size < TAIL_SIZE) return null;
+    const tail = readAt(fd, stat.size - TAIL_SIZE, TAIL_SIZE);
+    if (tail.readUInt32LE(1) !== PAK_MAGIC) return null;
+    const name = path.basename(pakPath);
+    if (tail[0] !== 0) return { pak: name, encryptedIndex: true, encryptedEntries: true };
+    const indexSize = Number(tail.readBigUInt64LE(17));
+    if (indexSize > 0 && indexSize <= 256 * 1024 * 1024) {
+      try {
+        const idx = parsePakIndex(pakPath);
+        if (idx) return { pak: name, encryptedIndex: false, encryptedEntries: idx.entries.some((e) => e.encrypted) };
+      } catch {
+        return null;
+      }
+    }
+    return { pak: name, encryptedIndex: false, encryptedEntries: false };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function listPakFiles(pakDir: string, pakFilter?: string): string[] {
   if (!fs.existsSync(pakDir)) return [];
   return fs
