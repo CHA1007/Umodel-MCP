@@ -18,6 +18,17 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
+const jsonFlag = z.boolean().optional().describe("Return machine-readable JSON instead of formatted text.");
+
+function filterLines(stdout: string, filter?: string, skip?: number, limit?: number) {
+  const all = stdout.split(/\r?\n/);
+  const f = filter?.toLowerCase();
+  const matched = f ? all.filter((l) => l.toLowerCase().includes(f)) : all;
+  const start = skip ?? 0;
+  const cap = limit ?? Math.max(matched.length - start, 0);
+  return { total: matched.length, lines: matched.slice(start, start + cap) };
+}
+
 const commonSchema = {
   gamePath: z.string().optional().describe("Game installation directory (-path=). Overrides config."),
   gameTag: z.string().optional().describe("Game tag override (-game=), e.g. ue4.27. See umodel_game_list."),
@@ -72,6 +83,50 @@ server.registerTool(
 );
 
 server.registerTool(
+  "umodel_setup_check",
+  {
+    title: "Check umodel MCP setup",
+    description:
+      "Diagnose the current configuration and report what is missing or misconfigured, with suggested next steps. Run this first when other tools fail or on a fresh install.",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const cfg = loadConfig();
+    const file = findConfigFile();
+    const lines: string[] = [];
+    const problems: string[] = [];
+    const check = (label: string, ok: boolean, detail: string, hint?: string) => {
+      lines.push(`${ok ? "[ok]     " : "[missing]"} ${label}: ${detail}`);
+      if (!ok && hint) problems.push(hint);
+    };
+    check("config file", !!file, file ?? "not found", "Create umodel-mcp.json or call umodel_config_set.");
+    const exeOk = !!cfg.umodelExe && fs.existsSync(cfg.umodelExe);
+    check(
+      "umodelExe",
+      exeOk,
+      cfg.umodelExe ?? "not set",
+      "Set umodelExe to the path of umodel_64.exe via umodel_config_set.",
+    );
+    const gpOk = !!cfg.gamePath && fs.existsSync(cfg.gamePath);
+    check("gamePath", gpOk, cfg.gamePath ?? "not set", "Set gamePath to the game's Content/Paks directory.");
+    check("outputDir", !!cfg.outputDir, cfg.outputDir ?? "not set", "Set outputDir so exports land in a known folder.");
+    check("gameTag", !!cfg.gameTag, cfg.gameTag ?? "not set (optional; see umodel_game_list)");
+    const keyCount = (cfg.aesKeys ?? []).length;
+    check("aesKeys", keyCount > 0, `${keyCount} key(s) (only needed for encrypted paks)`);
+    const nrcOk = !!cfg.nrcPakDir && !!cfg.nrcAesKey && !!cfg.nrcOutputDir;
+    check(
+      "NRC setup",
+      nrcOk,
+      cfg.nrcPakDir ? `pakDir=${cfg.nrcPakDir}, key=${cfg.nrcAesKey ? "set" : "missing"}, out=${cfg.nrcOutputDir ?? "missing"}` : "not configured (only needed for nrc_* tools)",
+      "Set nrcPakDir, nrcOutputDir and nrcAesKey via umodel_config_set to use nrc_* tools.",
+    );
+    if (problems.length === 0) lines.push("\nAll checks passed.");
+    else lines.push("\nNext steps:\n" + problems.map((p, i) => `${i + 1}. ${p}`).join("\n"));
+    return text(lines.join("\n"));
+  },
+);
+
+server.registerTool(
   "umodel_version",
   {
     title: "umodel version",
@@ -117,9 +172,10 @@ server.registerTool(
         .optional()
         .describe(`Extensions to look for (without dot). Default: ${PACKAGE_EXTENSIONS.join(",")}`),
       limit: z.number().int().positive().optional().describe("Max number of files to return (default 500)"),
+      json: jsonFlag,
     }),
   },
-  async ({ directory, extensions, limit }) => {
+  async ({ directory, extensions, limit, json }) => {
     const cfg = loadConfig();
     const dir = directory ?? cfg.gamePath;
     if (!dir) return text("No directory given and no gamePath configured.");
@@ -150,6 +206,8 @@ server.registerTool(
     walk(dir, 0);
 
     if (found.length === 0) return text(`No package files found under ${dir}`);
+    if (json)
+      return text(JSON.stringify({ directory: dir, count: found.length, truncated: found.length >= cap, files: found }, null, 2));
     return text(
       `Found ${found.length}${found.length >= cap ? "+" : ""} package file(s) under ${dir}:\n` +
         found.join("\n"),
@@ -164,13 +222,35 @@ server.registerTool(
     description: "Run 'umodel -list <package>' to list objects contained in a package.",
     inputSchema: z.object({
       package: z.string().describe("Package name (with or without extension), wildcard, or full file path"),
+      filter: z.string().optional().describe("Case-insensitive substring filter applied to output lines."),
+      skip: z.number().int().min(0).optional().describe("Number of (filtered) lines to skip (pagination)."),
+      limit: z.number().int().positive().optional().describe("Max (filtered) lines to return (pagination)."),
+      json: jsonFlag,
       ...commonSchema,
     }),
   },
-  async ({ package: pkg, ...rest }) => {
+  async ({ package: pkg, filter, skip, limit, json, ...rest }) => {
     const cfg = loadConfig();
     const args = ["-list", ...commonArgs(rest, cfg), pkg];
     const r = await runUmodel(cfg, args);
+    const paginated = filter !== undefined || skip !== undefined || limit !== undefined;
+    if (json) {
+      const { total, lines } = filterLines(r.stdout, filter, skip, limit);
+      return text(
+        JSON.stringify(
+          { command: r.command, exitCode: r.exitCode, timedOut: r.timedOut, stderr: r.stderr, totalLines: total, lines },
+          null,
+          2,
+        ),
+      );
+    }
+    if (paginated) {
+      const { total, lines } = filterLines(r.stdout, filter, skip, limit);
+      let msg = `$ ${r.command}\nexit code: ${r.exitCode}${r.timedOut ? " (TIMED OUT)" : ""}`;
+      msg += `\n${total} matching line(s), showing ${lines.length}:\n${lines.join("\n")}`;
+      if (r.stderr.trim()) msg += `\n--- stderr ---\n${r.stderr}`;
+      return text(msg);
+    }
     return text(formatResult(r));
   },
 );
@@ -182,13 +262,15 @@ server.registerTool(
     description: "Run 'umodel -pkginfo <package>' to display package summary (name table, export table).",
     inputSchema: z.object({
       package: z.string().describe("Package name, wildcard, or full file path"),
+      json: jsonFlag,
       ...commonSchema,
     }),
   },
-  async ({ package: pkg, ...rest }) => {
+  async ({ package: pkg, json, ...rest }) => {
     const cfg = loadConfig();
     const args = ["-pkginfo", ...commonArgs(rest, cfg), pkg];
     const r = await runUmodel(cfg, args);
+    if (json) return text(JSON.stringify(r, null, 2));
     return text(formatResult(r));
   },
 );
@@ -216,10 +298,11 @@ server.registerTool(
       thirdParty: z.boolean().optional().describe("Allow 3rd-party asset export: ScaleForm/FaceFX (-3rdparty)"),
       noOverwrite: z.boolean().optional().describe("Do not overwrite existing files (-nooverwrite)"),
       timeoutMs: z.number().int().positive().optional().describe("Override invocation timeout (ms)"),
+      json: jsonFlag,
       ...commonSchema,
     }),
   },
-  async ({ package: pkg, timeoutMs, ...opts }) => {
+  async ({ package: pkg, timeoutMs, json, ...opts }) => {
     const cfg = loadConfig();
     const args: string[] = ["-export"];
     if (opts.meshFormat) args.push(`-${opts.meshFormat}`);
@@ -240,6 +323,7 @@ server.registerTool(
     if (opts.object) args.push(opts.object);
     if (opts.className) args.push(opts.className);
     const r = await runUmodel(cfg, args, timeoutMs);
+    if (json) return text(JSON.stringify({ ...r, out }, null, 2));
     let msg = formatResult(r);
     if (r.exitCode === 0 && out) {
       msg += `\n\nExported files were written under: ${out}`;
@@ -263,10 +347,11 @@ server.registerTool(
         .optional()
         .describe("Keep directory structure (default true matches GUI default)"),
       timeoutMs: z.number().int().positive().optional(),
+      json: jsonFlag,
       ...commonSchema,
     }),
   },
-  async ({ package: pkg, timeoutMs, ...opts }) => {
+  async ({ package: pkg, timeoutMs, json, ...opts }) => {
     const cfg = loadConfig();
     const out = opts.out ?? cfg.outputDir;
     if (!out) return text("No output directory given: pass 'out' or configure outputDir.");
@@ -274,6 +359,7 @@ server.registerTool(
     args.push(`-out=${out}`);
     args.push(...commonArgs(opts, cfg), pkg);
     const r = await runUmodel(cfg, args, timeoutMs);
+    if (json) return text(JSON.stringify({ ...r, out }, null, 2));
     let msg = formatResult(r);
     if (r.exitCode === 0) {
       msg += `\n\nSaved packages under: ${out}`;
@@ -295,9 +381,10 @@ server.registerTool(
       pakDir: z.string().optional().describe("Pak directory. Defaults to configured nrcPakDir."),
       pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
       limit: z.number().int().positive().optional().describe("Max entries to return (default 200)"),
+      json: jsonFlag,
     }),
   },
-  async ({ filters, pakDir, pakFilter, limit }) => {
+  async ({ filters, pakDir, pakFilter, limit, json }) => {
     const cfg = loadConfig();
     const dir = pakDir ?? cfg.nrcPakDir;
     if (!cfg.nrcAesKey)
@@ -306,34 +393,44 @@ server.registerTool(
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
     const cap = limit ?? 200;
-    const found: string[] = [];
+    const matches: { pak: string; path: string; size: number }[] = [];
+    const errors: string[] = [];
     let scanned = 0;
     for (const p of paks) {
-      if (found.length >= cap) break;
+      if (matches.length >= cap) break;
       let index;
       try {
         index = parsePakIndex(p, cfg.nrcAesKey);
       } catch (e) {
-        found.push(`[error] ${path.basename(p)}: ${e}`);
+        errors.push(`${path.basename(p)}: ${e}`);
         continue;
       }
       if (!index) continue;
       scanned++;
       for (const e of index.entries) {
-        if (found.length >= cap) break;
+        if (matches.length >= cap) break;
         const lower = e.path.toLowerCase();
         if (filters.some((f) => lower.includes(f.toLowerCase()))) {
-          found.push(`${e.pak} :: ${e.path}  (${e.size} bytes)`);
+          matches.push({ pak: e.pak, path: e.path, size: e.size });
         }
       }
     }
-    if (found.length === 0)
+    if (json)
+      return text(
+        JSON.stringify(
+          { directory: dir, scanned, totalPaks: paks.length, filters, truncated: matches.length >= cap, matches, errors },
+          null,
+          2,
+        ),
+      );
+    if (matches.length === 0)
       return text(`No matches for [${filters.join(", ")}] after scanning ${scanned}/${paks.length} paks in ${dir}`);
-    return text(
+    let msg =
       `Scanned ${scanned}/${paks.length} paks in ${dir}\nMatches for [${filters.join(", ")}]:\n` +
-        found.join("\n") +
-        (found.length >= cap ? "\n... (truncated)" : ""),
-    );
+      matches.map((m) => `${m.pak} :: ${m.path}  (${m.size} bytes)`).join("\n") +
+      (matches.length >= cap ? "\n... (truncated)" : "");
+    if (errors.length) msg += `\n\nErrors:\n${errors.slice(0, 10).join("\n")}`;
+    return text(msg);
   },
 );
 
@@ -350,9 +447,10 @@ server.registerTool(
       out: z.string().optional().describe("Output directory. Defaults to configured nrcOutputDir."),
       pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
       maxFiles: z.number().int().positive().optional().describe("Max files to extract (default 200)"),
+      json: jsonFlag,
     }),
   },
-  async ({ filters, pakDir, out, pakFilter, maxFiles }) => {
+  async ({ filters, pakDir, out, pakFilter, maxFiles, json }) => {
     const cfg = loadConfig();
     const dir = pakDir ?? cfg.nrcPakDir;
     const outDir = out ?? cfg.nrcOutputDir;
@@ -363,14 +461,15 @@ server.registerTool(
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
     const cap = maxFiles ?? 200;
-    const extracted: string[] = [];
+    const extracted: { path: string; size: number }[] = [];
     const warnings: string[] = [];
     for (const p of paks) {
       if (extracted.length >= cap) break;
       let index;
       try {
         index = parsePakIndex(p, cfg.nrcAesKey);
-      } catch {
+      } catch (err) {
+        warnings.push(`${path.basename(p)}: ${err}`);
         continue;
       }
       if (!index) continue;
@@ -385,17 +484,21 @@ server.registerTool(
         }
         try {
           extractEntry(p, e, outDir, cfg.nrcAesKey);
-          extracted.push(`${e.path}  (${e.size} bytes)`);
+          extracted.push({ path: e.path, size: e.size });
         } catch (err) {
           warnings.push(`${e.path}: ${err}`);
         }
       }
     }
+    if (json)
+      return text(JSON.stringify({ outDir, filters, truncated: extracted.length >= cap, extracted, warnings }, null, 2));
     let msg: string;
     if (extracted.length === 0) {
       msg = `Nothing extracted for [${filters.join(", ")}].`;
     } else {
-      msg = `Extracted ${extracted.length} file(s) to ${outDir}:\n` + extracted.join("\n");
+      msg =
+        `Extracted ${extracted.length} file(s) to ${outDir}:\n` +
+        extracted.map((e) => `${e.path}  (${e.size} bytes)`).join("\n");
       msg += `\n\n--- output structure ---\n${listTree(outDir, { maxEntries: 100 })}`;
     }
     if (warnings.length) msg += `\n\nWarnings:\n` + warnings.slice(0, 20).join("\n");
