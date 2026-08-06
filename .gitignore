@@ -1,6 +1,5 @@
 node_modules/
 dist/
 export/
-umodel-mcp.json
 *.log
 AGENTS.md

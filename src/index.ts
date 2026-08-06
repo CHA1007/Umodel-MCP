@@ -4,14 +4,14 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { findConfigFile, loadConfig, saveConfig } from "./config.js";
+import { defaultOutputDir, findUmodelExes, resolveOutputDir, session } from "./session.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
 import { listTree } from "./tree.js";
 import { extractEntry, listPakFiles, parsePakIndex } from "./pak.js";
 
 const server = new McpServer({
   name: "umodel-mcp",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 function text(s: string) {
@@ -29,27 +29,46 @@ function filterLines(stdout: string, filter?: string, skip?: number, limit?: num
   return { total: matched.length, lines: matched.slice(start, start + cap) };
 }
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
 const commonSchema = {
-  gamePath: z.string().optional().describe("Game installation directory (-path=). Overrides config."),
+  gamePath: z
+    .string()
+    .optional()
+    .describe("Game installation directory (-path=). Overrides session. If unknown, ask the user first."),
   gameTag: z.string().optional().describe("Game tag override (-game=), e.g. ue4.27. See umodel_game_list."),
-  aesKeys: z.array(z.string()).optional().describe("AES keys for encrypted pak files (-aes=). Overrides config."),
+  aesKeys: z.array(z.string()).optional().describe("AES keys for encrypted pak files (-aes=). Overrides session."),
 };
 
 server.registerTool(
-  "umodel_config_get",
+  "umodel_session_get",
   {
-    title: "Get umodel MCP configuration",
+    title: "Show current session settings",
     description:
-      "Show the resolved umodel MCP configuration (config file + environment overrides).",
+      "Show the in-memory session settings (umodel exe, game directory, output directory, AES keys). " +
+      "No config file is used; settings live only for this server session.",
     inputSchema: z.object({}),
   },
   async () => {
-    const cfg = loadConfig();
-    let exeOk = false;
-    if (cfg.umodelExe && fs.existsSync(cfg.umodelExe)) exeOk = true;
+    const exeOk = !!session.umodelExe && fs.existsSync(session.umodelExe);
     return text(
       JSON.stringify(
-        { configFile: findConfigFile(), config: cfg, umodelExeExists: exeOk },
+        {
+          session,
+          umodelExeExists: exeOk,
+          resolvedOutputDir: resolveOutputDir(),
+          defaultOutputDir: defaultOutputDir(),
+        },
         null,
         2,
       ),
@@ -58,22 +77,22 @@ server.registerTool(
 );
 
 server.registerTool(
-  "umodel_config_set",
+  "umodel_session_set",
   {
-    title: "Set umodel MCP configuration",
+    title: "Remember session settings",
     description:
-      "Persist umodel MCP settings to the config file (umodel-mcp.json). Pass empty string to clear a field.",
+      "Store settings in the in-memory session (nothing is written to disk). " +
+      "IMPORTANT: umodelExe and gamePath must come from the user — ask the user for the umodel executable path " +
+      "and the game/pak directory before setting them; never guess. " +
+      "Only fall back to umodel_find_exe when the user does not know the path or the given path is wrong. " +
+      "Pass an empty string to clear a field. outputDir defaults to the Downloads folder when unset.",
     inputSchema: z.object({
-      umodelExe: z.string().optional().describe("Path to umodel.exe"),
-      gamePath: z.string().optional().describe("Default game directory"),
+      umodelExe: z.string().optional().describe("Path to umodel.exe / umodel_64.exe (ask the user first)"),
+      gamePath: z.string().optional().describe("Game / pak directory (ask the user first)"),
       gameTag: z.string().optional().describe("Default game tag (-game=)"),
       aesKeys: z.array(z.string()).optional().describe("AES keys (-aes=)"),
-      outputDir: z.string().optional().describe("Default export output directory (-out=)"),
-      defaultArgs: z.array(z.string()).optional().describe("Extra args appended to every call"),
-      timeoutMs: z.number().int().positive().optional().describe("Invocation timeout in ms"),
-      pakDir: z.string().optional().describe("Default .pak directory for pak_list/pak_extract"),
-      pakOutputDir: z.string().optional().describe("Default output directory for pak_extract"),
-      pakAesKey: z.string().optional().describe("AES key (hex, 0x prefix optional) for encrypted pak index decryption"),
+      outputDir: z.string().optional().describe("Export output directory (-out=). Default: Downloads/umodel-export"),
+      pakAesKey: z.string().optional().describe("AES key (hex, 0x prefix optional) for pak index decryption"),
       pakAesMode: z
         .enum(["standard", "bitflip"])
         .optional()
@@ -81,68 +100,91 @@ server.registerTool(
     }),
   },
   async (args) => {
-    const { file, config } = saveConfig(args);
-    return text(`Saved config to ${file}:\n${JSON.stringify(config, null, 2)}`);
+    const setStr = (key: keyof typeof session, v?: string) => {
+      if (v === undefined) return;
+      if (v === "") delete session[key];
+      else session[key] = v as never;
+    };
+    setStr("umodelExe", args.umodelExe);
+    setStr("gamePath", args.gamePath);
+    setStr("gameTag", args.gameTag);
+    setStr("outputDir", args.outputDir);
+    setStr("pakAesKey", args.pakAesKey);
+    if (args.pakAesMode !== undefined) session.pakAesMode = args.pakAesMode;
+    if (args.aesKeys !== undefined) session.aesKeys = args.aesKeys.filter(Boolean);
+    return text(`Session updated:\n${JSON.stringify(session, null, 2)}`);
   },
 );
 
 server.registerTool(
-  "umodel_setup_check",
+  "umodel_find_exe",
   {
-    title: "Check umodel MCP setup",
+    title: "Auto-locate umodel executable",
     description:
-      "Diagnose the current configuration and report what is missing or misconfigured, with suggested next steps. Run this first when other tools fail or on a fresh install.",
-    inputSchema: z.object({}),
+      "Search common locations (Downloads/Desktop/Documents/Program Files/PATH...) for umodel.exe / umodel_64.exe. " +
+      "ONLY use this as a fallback when the user does not know the umodel path or provided an invalid one — " +
+      "always ask the user for the path first. With verify=true the newest candidate is tested via -version and remembered.",
+    inputSchema: z.object({
+      dirs: z
+        .array(z.string())
+        .optional()
+        .describe("Extra directories to search deeply (e.g. a folder the user vaguely remembers)."),
+      verify: z.boolean().optional().describe("Run -version on the newest candidate and remember it if it works."),
+      json: jsonFlag,
+    }),
   },
-  async () => {
-    const cfg = loadConfig();
-    const file = findConfigFile();
-    const lines: string[] = [];
-    const problems: string[] = [];
-    const check = (label: string, ok: boolean, detail: string, hint?: string) => {
-      lines.push(`${ok ? "[ok]     " : "[missing]"} ${label}: ${detail}`);
-      if (!ok && hint) problems.push(hint);
-    };
-    check("config file", !!file, file ?? "not found", "Create umodel-mcp.json or call umodel_config_set.");
-    const exeOk = !!cfg.umodelExe && fs.existsSync(cfg.umodelExe);
-    check(
-      "umodelExe",
-      exeOk,
-      cfg.umodelExe ?? "not set",
-      "Set umodelExe to the path of umodel_64.exe via umodel_config_set.",
-    );
-    const gpOk = !!cfg.gamePath && fs.existsSync(cfg.gamePath);
-    check("gamePath", gpOk, cfg.gamePath ?? "not set", "Set gamePath to the game's Content/Paks directory.");
-    check("outputDir", !!cfg.outputDir, cfg.outputDir ?? "not set", "Set outputDir so exports land in a known folder.");
-    check("gameTag", !!cfg.gameTag, cfg.gameTag ?? "not set (optional; see umodel_game_list)");
-    const keyCount = (cfg.aesKeys ?? []).length;
-    check("aesKeys", keyCount > 0, `${keyCount} key(s) (only needed for encrypted paks)`);
-    const pakOk = !!cfg.pakDir && !!cfg.pakOutputDir;
-    check(
-      "pak setup",
-      pakOk,
-      cfg.pakDir
-        ? `pakDir=${cfg.pakDir}, out=${cfg.pakOutputDir ?? "missing"}, key=${cfg.pakAesKey ? "set" : "none (ok for unencrypted paks)"}`
-        : "not configured (only needed for pak_list/pak_extract)",
-      "Set pakDir and pakOutputDir (plus pakAesKey for encrypted paks) via umodel_config_set.",
-    );
-    if (problems.length === 0) lines.push("\nAll checks passed.");
-    else lines.push("\nNext steps:\n" + problems.map((p, i) => `${i + 1}. ${p}`).join("\n"));
-    return text(lines.join("\n"));
+  async ({ dirs, verify, json }) => {
+    const candidates = findUmodelExes(dirs);
+    if (candidates.length === 0) {
+      return text(
+        "未找到 umodel 可执行文件。请让用户从 https://www.gildor.org/en/projects/umodel 下载 UE Viewer，" +
+          "解压后提供 umodel_64.exe 的完整路径。",
+      );
+    }
+    if (json) return text(JSON.stringify({ candidates }, null, 2));
+    let msg =
+      `找到 ${candidates.length} 个候选 umodel 可执行文件（按修改时间倒序）：\n` +
+      candidates
+        .map((c) => `${c.path}  (${formatSize(c.size)}, ${c.mtime.slice(0, 10)})`)
+        .join("\n");
+    if (verify) {
+      const top = candidates[0];
+      try {
+        const r = await runUmodel(top.path, ["-version"], 30_000);
+        if (r.exitCode === 0) {
+          session.umodelExe = top.path;
+          msg += `\n\n已验证并记住: ${top.path}\n${r.stdout.trim()}`;
+        } else {
+          msg += `\n\n验证失败 (${top.path}): exit ${r.exitCode}\n${r.stderr.trim()}`;
+        }
+      } catch (e) {
+        msg += `\n\n验证失败 (${top.path}): ${e}`;
+      }
+    } else {
+      msg += "\n\n确认候选后调用 umodel_session_set 记住，或带 verify=true 重新调用以自动验证。";
+    }
+    return text(msg);
   },
 );
 
 server.registerTool(
   "umodel_version",
   {
-    title: "umodel version",
-    description: "Run 'umodel -version' to verify the executable works.",
-    inputSchema: z.object({}),
+    title: "Verify umodel executable",
+    description:
+      "Run 'umodel -version' to verify the executable works. Pass exe to test a new path; " +
+      "if it works it is remembered in the session.",
+    inputSchema: z.object({
+      exe: z.string().optional().describe("Executable path to test (and remember if it works). Defaults to session."),
+    }),
   },
-  async () => {
-    const cfg = loadConfig();
-    const r = await runUmodel(cfg, ["-version"]);
-    return text(formatResult(r));
+  async ({ exe }) => {
+    const target = exe ?? session.umodelExe;
+    const r = await runUmodel(target, ["-version"], 30_000);
+    if (exe && r.exitCode === 0) session.umodelExe = exe;
+    let msg = formatResult(r);
+    if (exe && r.exitCode === 0) msg += `\n\n已记住可执行文件: ${exe}`;
+    return text(msg);
   },
 );
 
@@ -157,8 +199,7 @@ server.registerTool(
     }),
   },
   async ({ tags }) => {
-    const cfg = loadConfig();
-    const r = await runUmodel(cfg, [tags ? "-taglist" : "-gamelist"]);
+    const r = await runUmodel(session.umodelExe, [tags ? "-taglist" : "-gamelist"]);
     return text(formatResult(r));
   },
 );
@@ -170,9 +211,10 @@ server.registerTool(
   {
     title: "Find package files in a game directory",
     description:
-      "Recursively scan a directory for Unreal package files (.pak/.upk/.uasset/.ut2/...) so you know what to pass to other tools.",
+      "Recursively scan a directory for Unreal package files (.pak/.upk/.uasset/.ut2/...) so you know what to pass to other tools. " +
+      "The directory should come from the user — ask which game directory to unpack before scanning.",
     inputSchema: z.object({
-      directory: z.string().optional().describe("Directory to scan. Defaults to configured gamePath."),
+      directory: z.string().optional().describe("Directory to scan. Defaults to session gamePath."),
       extensions: z
         .array(z.string())
         .optional()
@@ -182,9 +224,8 @@ server.registerTool(
     }),
   },
   async ({ directory, extensions, limit, json }) => {
-    const cfg = loadConfig();
-    const dir = directory ?? cfg.gamePath;
-    if (!dir) return text("No directory given and no gamePath configured.");
+    const dir = directory ?? session.gamePath;
+    if (!dir) return text("未提供目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     if (!fs.existsSync(dir)) return text(`Directory does not exist: ${dir}`);
     const exts = new Set((extensions ?? PACKAGE_EXTENSIONS).map((e) => e.toLowerCase().replace(/^\./, "")));
     const cap = limit ?? 500;
@@ -236,9 +277,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, filter, skip, limit, json, ...rest }) => {
-    const cfg = loadConfig();
-    const args = ["-list", ...commonArgs(rest, cfg), pkg];
-    const r = await runUmodel(cfg, args);
+    const args = ["-list", ...commonArgs(rest, session), pkg];
+    const r = await runUmodel(session.umodelExe, args);
     const paginated = filter !== undefined || skip !== undefined || limit !== undefined;
     if (json) {
       const { total, lines } = filterLines(r.stdout, filter, skip, limit);
@@ -273,9 +313,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, json, ...rest }) => {
-    const cfg = loadConfig();
-    const args = ["-pkginfo", ...commonArgs(rest, cfg), pkg];
-    const r = await runUmodel(cfg, args);
+    const args = ["-pkginfo", ...commonArgs(rest, session), pkg];
+    const r = await runUmodel(session.umodelExe, args);
     if (json) return text(JSON.stringify(r, null, 2));
     return text(formatResult(r));
   },
@@ -287,13 +326,13 @@ server.registerTool(
     title: "Export assets from a package",
     description:
       "Run 'umodel -export' to convert assets (meshes, textures, animations, sounds...) to standard formats (psk/gltf/tga/png/...). " +
-      "Without object filters the whole package is exported.",
+      "Without object filters the whole package is exported. Output defaults to the Downloads folder.",
     inputSchema: z.object({
       package: z.string().describe("Package name, wildcard, or full file path"),
       object: z.string().optional().describe("Single object name to export (positional <object>)"),
       className: z.string().optional().describe("Class of the object (positional <class>)"),
       objects: z.array(z.string()).optional().describe("Additional object filters (-obj=name, repeatable)"),
-      out: z.string().optional().describe("Output directory (-out=). Defaults to configured outputDir or cwd."),
+      out: z.string().optional().describe("Output directory (-out=). Defaults to session outputDir or Downloads/umodel-export."),
       meshFormat: z.enum(["psk", "md5", "gltf"]).optional().describe("Mesh export format (default psk)"),
       textureFormat: z.enum(["tga", "png", "dds"]).optional().describe("Texture format (default tga; dds keeps original compression)"),
       lods: z.boolean().optional().describe("Export all mesh LOD levels (-lods)"),
@@ -309,7 +348,6 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
-    const cfg = loadConfig();
     const args: string[] = ["-export"];
     if (opts.meshFormat) args.push(`-${opts.meshFormat}`);
     if (opts.textureFormat === "png") args.push("-png");
@@ -321,14 +359,14 @@ server.registerTool(
     if (opts.sounds) args.push("-sounds");
     if (opts.thirdParty) args.push("-3rdparty");
     if (opts.noOverwrite) args.push("-nooverwrite");
-    const out = opts.out ?? cfg.outputDir;
-    if (out) args.push(`-out=${out}`);
-    args.push(...commonArgs(opts, cfg));
+    const out = opts.out ?? resolveOutputDir();
+    args.push(`-out=${out}`);
+    args.push(...commonArgs(opts, session));
     for (const o of opts.objects ?? []) args.push(`-obj=${o}`);
     args.push(pkg);
     if (opts.object) args.push(opts.object);
     if (opts.className) args.push(opts.className);
-    const r = await runUmodel(cfg, args, timeoutMs);
+    const r = await runUmodel(session.umodelExe, args, timeoutMs);
     if (json) return text(JSON.stringify({ ...r, out }, null, 2));
     let msg = formatResult(r);
     if (r.exitCode === 0 && out) {
@@ -344,27 +382,20 @@ server.registerTool(
   {
     title: "Save raw packages",
     description:
-      "Run 'umodel -save' to copy raw package files (.upk/.uasset + .uexp/.ubulk) out of a game directory, e.g. to unpack a cooked game without converting.",
+      "Run 'umodel -save' to copy raw package files (.upk/.uasset + .uexp/.ubulk) out of a game directory, e.g. to unpack a cooked game without converting. " +
+      "Output defaults to the Downloads folder.",
     inputSchema: z.object({
       package: z.string().describe("Package name, wildcard, or full file path"),
-      out: z.string().optional().describe("Output directory (-out=). Defaults to configured outputDir."),
-      keepStructure: z
-        .boolean()
-        .optional()
-        .describe("Keep directory structure (default true matches GUI default)"),
+      out: z.string().optional().describe("Output directory (-out=). Defaults to session outputDir or Downloads/umodel-export."),
       timeoutMs: z.number().int().positive().optional(),
       json: jsonFlag,
       ...commonSchema,
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
-    const cfg = loadConfig();
-    const out = opts.out ?? cfg.outputDir;
-    if (!out) return text("No output directory given: pass 'out' or configure outputDir.");
-    const args = ["-save"];
-    args.push(`-out=${out}`);
-    args.push(...commonArgs(opts, cfg), pkg);
-    const r = await runUmodel(cfg, args, timeoutMs);
+    const out = opts.out ?? resolveOutputDir();
+    const args = ["-save", `-out=${out}`, ...commonArgs(opts, session), pkg];
+    const r = await runUmodel(session.umodelExe, args, timeoutMs);
     if (json) return text(JSON.stringify({ ...r, out }, null, 2));
     let msg = formatResult(r);
     if (r.exitCode === 0) {
@@ -381,24 +412,24 @@ server.registerTool(
     title: "List files inside UE .pak archives",
     description:
       "Parse UE .pak index files (AES-encrypted indexes supported, including games using custom bit-flipped AES) and list asset paths matching the filters. " +
-      "Works without umodel. Use this before pak_extract to locate assets (meshes/textures/animations).",
+      "Works without umodel. Use this before pak_extract to locate assets (meshes/textures/animations). " +
+      "The pak directory should come from the user — ask which game directory to unpack first.",
     inputSchema: z.object({
       filters: z.array(z.string()).min(1).describe("Case-insensitive substrings to match, e.g. ['SKM_PC2']"),
-      pakDir: z.string().optional().describe("Pak directory. Defaults to configured pakDir."),
+      pakDir: z.string().optional().describe("Pak directory. Defaults to session gamePath."),
       pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
       aesMode: z
         .enum(["standard", "bitflip"])
         .optional()
-        .describe("Index decryption mode. Overrides configured pakAesMode (default standard)."),
+        .describe("Index decryption mode. Overrides session pakAesMode (default standard)."),
       limit: z.number().int().positive().optional().describe("Max entries to return (default 200)"),
       json: jsonFlag,
     }),
   },
   async ({ filters, pakDir, pakFilter, aesMode, limit, json }) => {
-    const cfg = loadConfig();
-    const dir = pakDir ?? cfg.pakDir;
-    const mode = aesMode ?? cfg.pakAesMode ?? "standard";
-    if (!dir) return text("No pak directory given: pass 'pakDir' or configure pakDir.");
+    const dir = pakDir ?? session.gamePath;
+    const mode = aesMode ?? session.pakAesMode ?? "standard";
+    if (!dir) return text("未提供 pak 目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
     const cap = limit ?? 200;
@@ -409,7 +440,7 @@ server.registerTool(
       if (matches.length >= cap) break;
       let index;
       try {
-        index = parsePakIndex(p, cfg.pakAesKey, mode);
+        index = parsePakIndex(p, session.pakAesKey, mode);
       } catch (e) {
         errors.push(`${path.basename(p)}: ${e}`);
         continue;
@@ -452,27 +483,26 @@ server.registerTool(
     title: "Extract files from UE .pak archives",
     description:
       "Extract raw .uasset/.uexp files from UE .pak archives by parsing the index directly (AES-encrypted indexes supported, including custom bit-flipped AES). " +
-      "Works without umodel. The extracted loose files can then be converted with umodel_export (point it at the output directory).",
+      "Works without umodel. The extracted loose files can then be converted with umodel_export (point it at the output directory). " +
+      "Output defaults to <outputDir>/pak under the Downloads folder.",
     inputSchema: z.object({
       filters: z.array(z.string()).min(1).describe("Case-insensitive substrings to match, e.g. ['SKM_PC2']"),
-      pakDir: z.string().optional().describe("Pak directory. Defaults to configured pakDir."),
-      out: z.string().optional().describe("Output directory. Defaults to configured pakOutputDir."),
+      pakDir: z.string().optional().describe("Pak directory. Defaults to session gamePath."),
+      out: z.string().optional().describe("Output directory. Defaults to <session outputDir>/pak."),
       pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
       aesMode: z
         .enum(["standard", "bitflip"])
         .optional()
-        .describe("Decryption mode. Overrides configured pakAesMode (default standard)."),
+        .describe("Decryption mode. Overrides session pakAesMode (default standard)."),
       maxFiles: z.number().int().positive().optional().describe("Max files to extract (default 200)"),
       json: jsonFlag,
     }),
   },
   async ({ filters, pakDir, out, pakFilter, aesMode, maxFiles, json }) => {
-    const cfg = loadConfig();
-    const dir = pakDir ?? cfg.pakDir;
-    const outDir = out ?? cfg.pakOutputDir;
-    const mode = aesMode ?? cfg.pakAesMode ?? "standard";
-    if (!dir) return text("No pak directory given: pass 'pakDir' or configure pakDir.");
-    if (!outDir) return text("No output directory given: pass 'out' or configure pakOutputDir.");
+    const dir = pakDir ?? session.gamePath;
+    const outDir = out ?? path.join(resolveOutputDir(), "pak");
+    const mode = aesMode ?? session.pakAesMode ?? "standard";
+    if (!dir) return text("未提供 pak 目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     const paks = listPakFiles(dir, pakFilter);
     if (paks.length === 0) return text(`No .pak files found in ${dir}`);
     const cap = maxFiles ?? 200;
@@ -482,7 +512,7 @@ server.registerTool(
       if (extracted.length >= cap) break;
       let index;
       try {
-        index = parsePakIndex(p, cfg.pakAesKey, mode);
+        index = parsePakIndex(p, session.pakAesKey, mode);
       } catch (err) {
         warnings.push(`${path.basename(p)}: ${err}`);
         continue;
@@ -498,7 +528,7 @@ server.registerTool(
           continue;
         }
         try {
-          extractEntry(p, e, outDir, cfg.pakAesKey, mode);
+          extractEntry(p, e, outDir, session.pakAesKey, mode);
           extracted.push({ path: e.path, size: e.size });
         } catch (err) {
           warnings.push(`${e.path}: ${err}`);
@@ -529,15 +559,13 @@ server.registerTool(
       "List the folder structure and files produced by umodel_export/umodel_save, with sizes. " +
       "Use this after an export to see what was unpacked.",
     inputSchema: z.object({
-      directory: z.string().optional().describe("Directory to inspect. Defaults to configured outputDir."),
+      directory: z.string().optional().describe("Directory to inspect. Defaults to session outputDir."),
       maxDepth: z.number().int().positive().optional().describe("Max folder depth to expand (default 8)"),
       maxEntries: z.number().int().positive().optional().describe("Max entries to show (default 400)"),
     }),
   },
   async ({ directory, maxDepth, maxEntries }) => {
-    const cfg = loadConfig();
-    const dir = directory ?? cfg.outputDir;
-    if (!dir) return text("No directory given: pass 'directory' or configure outputDir.");
+    const dir = directory ?? resolveOutputDir();
     return text(listTree(dir, { maxDepth, maxEntries }));
   },
 );

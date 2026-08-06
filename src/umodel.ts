@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { UmodelConfig } from "./config.js";
+import type { Session } from "./session.js";
 
 export interface RunResult {
   exitCode: number | null;
@@ -18,27 +18,28 @@ function truncate(s: string): string {
 }
 
 export function runUmodel(
-  cfg: UmodelConfig,
+  exe: string | undefined,
   args: string[],
   timeoutMs?: number,
 ): Promise<RunResult> {
-  const exe = cfg.umodelExe;
   if (!exe) {
     throw new Error(
-      "umodel executable is not configured. Set umodelExe in umodel-mcp.json or the UMODEL_EXE environment variable.",
+      "umodel 可执行文件路径未知。请先向用户询问 umodel_64.exe 的路径并用 umodel_session_set 记住；" +
+        "用户不清楚时再用 umodel_find_exe 自动搜索。",
     );
   }
   if (!fs.existsSync(exe)) {
-    throw new Error(`umodel executable not found: ${exe}`);
+    throw new Error(
+      `umodel 可执行文件不存在: ${exe}。请让用户确认正确路径（umodel_session_set 更新），或用 umodel_find_exe 自动搜索。`,
+    );
   }
-  const fullArgs = [...args, ...(cfg.defaultArgs ?? [])];
-  const timeout = timeoutMs ?? cfg.timeoutMs ?? 300_000;
+  const timeout = timeoutMs ?? 300_000;
 
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    const child = spawn(exe, fullArgs, { windowsHide: true });
+    const child = spawn(exe, args, { windowsHide: true });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
@@ -56,7 +57,7 @@ export function runUmodel(
         stdout: truncate(stdout),
         stderr: truncate(stderr),
         timedOut,
-        command: `"${exe}" ${fullArgs.map(quoteArg).join(" ")}`,
+        command: `"${exe}" ${args.map(quoteArg).join(" ")}`,
       });
     });
   });
@@ -66,18 +67,16 @@ function quoteArg(a: string): string {
   return /[\s"']/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
 }
 
-export function commonArgs(opts: {
-  gamePath?: string;
-  gameTag?: string;
-  aesKeys?: string[];
-}, cfg: UmodelConfig): string[] {
+export function commonArgs(
+  opts: { gamePath?: string; gameTag?: string; aesKeys?: string[] },
+  s: Session,
+): string[] {
   const args: string[] = [];
-  const path_ = opts.gamePath ?? cfg.gamePath;
-  if (path_) args.push(`-path=${path_}`);
-  const tag = opts.gameTag ?? cfg.gameTag;
+  const p = opts.gamePath ?? s.gamePath;
+  if (p) args.push(`-path=${p}`);
+  const tag = opts.gameTag ?? s.gameTag;
   if (tag) args.push(`-game=${tag}`);
-  const keys = opts.aesKeys ?? cfg.aesKeys ?? [];
-  for (const k of keys) args.push(`-aes=${k}`);
+  for (const k of opts.aesKeys ?? s.aesKeys ?? []) args.push(`-aes=${k}`);
   return args;
 }
 
