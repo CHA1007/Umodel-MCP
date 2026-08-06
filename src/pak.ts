@@ -46,6 +46,14 @@ function byteReverse(key: Buffer): Buffer {
   return k;
 }
 
+export function normalizePakPath(p: string): string {
+  let s = p.replace(/\\/g, "/");
+  s = s.replace(/^(\.\.\/)+/, "");
+  if (!/^Engine\//i.test(s)) s = s.replace(/^[^/]+\/Content\//i, "");
+  s = s.replace(/^Content\//i, "");
+  return s;
+}
+
 function bitReverse(data: Buffer): Buffer {
   const d = Buffer.from(data);
   for (let i = 0; i < Math.min(16, d.length); i++) {
@@ -222,7 +230,7 @@ export function parsePakIndex(pakPath: string, keyHex?: string, mode: PakAesMode
         const decoded = decodeEntry(entriesBlob, entryOff, compressionMethods);
         if (!decoded) continue;
         const full = (dirName ? dirName : "") + fileName;
-        entries.push({ pak: path.basename(pakPath), path: full.replace(/\\/g, "/"), ...decoded });
+        entries.push({ pak: path.basename(pakPath), path: normalizePakPath(full), ...decoded });
       }
     }
     void fileCount;

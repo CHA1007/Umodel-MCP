@@ -72,6 +72,9 @@ export function commonArgs(
   s: Session,
 ): string[] {
   const args: string[] = [];
+  if (opts.gamePath && fs.existsSync(opts.gamePath)) s.gamePath = opts.gamePath;
+  if (opts.gameTag) s.gameTag = opts.gameTag;
+  if (opts.aesKeys?.length) s.aesKeys = opts.aesKeys;
   const p = opts.gamePath ?? s.gamePath;
   if (p) args.push(`-path=${p}`);
   const tag = opts.gameTag ?? s.gameTag;

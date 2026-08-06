@@ -96,6 +96,9 @@ server.registerTool(
     title: "Remember session settings",
     description:
       "Store settings in the in-memory session (nothing is written to disk). " +
+      "NOTE: most values (gamePath/gameTag/aesKeys/pakAesKey/pakAesMode) are auto-remembered whenever you pass them to any tool, " +
+      "so you rarely need this tool — use it only to set values ahead of time, clear them (empty string), " +
+      "or configure pure settings: umodelExe (user-confirmed), outputDir, pakAesMode. " +
       "IMPORTANT: umodelExe and gamePath must come from the user — ask the user for the umodel executable path " +
       "and the game/pak directory before setting them; never guess. " +
       "Only fall back to umodel_find_exe when the user does not know the path or the given path is wrong. " +
@@ -348,6 +351,7 @@ server.registerTool(
     }),
   },
   async ({ directory, extensions, limit, json }) => {
+    if (directory && fs.existsSync(directory)) session.gamePath = directory;
     const dir = directory ?? session.gamePath;
     if (!dir) return errorText("未提供目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
     if (!fs.existsSync(dir)) return errorText(`目录不存在: ${dir}`);
@@ -605,6 +609,9 @@ server.registerTool(
     }),
   },
   async ({ filters, pakDir, pakFilter, aesKey, aesMode, limit, json }) => {
+    if (pakDir && fs.existsSync(pakDir)) session.gamePath = pakDir;
+    if (aesKey) session.pakAesKey = aesKey;
+    if (aesMode) session.pakAesMode = aesMode;
     const dir = pakDir ?? session.gamePath;
     const key = aesKey ?? session.pakAesKey;
     const mode = aesMode ?? session.pakAesMode ?? "standard";
@@ -683,6 +690,9 @@ server.registerTool(
     }),
   },
   async ({ filters, pakDir, out, pakFilter, aesKey, aesMode, maxFiles, json }) => {
+    if (pakDir && fs.existsSync(pakDir)) session.gamePath = pakDir;
+    if (aesKey) session.pakAesKey = aesKey;
+    if (aesMode) session.pakAesMode = aesMode;
     const dir = pakDir ?? session.gamePath;
     const outDir = out ?? path.join(resolveOutputDir(), "pak");
     const key = aesKey ?? session.pakAesKey;
