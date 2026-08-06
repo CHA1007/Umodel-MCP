@@ -3,3 +3,4 @@ dist/
 export/
 *.log
 AGENTS.md
+.pi-subagents/
