@@ -1,14 +1,29 @@
 # Umodel-MCP
 
-面向 [umodel（UE Viewer）](https://www.gildor.org/en/projects/umodel) 的 MCP 服务器，
-让任意 MCP 客户端可以通过自然语言完成 Unreal Engine 游戏资源的**列表、解包、导出**操作
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/CHA1007/Umodel-MCP/blob/main/LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-CHA1007%2FUmodel--MCP-black?logo=github)](https://github.com/CHA1007/Umodel-MCP)
 
-其中 `pak_list` / `pak_extract` 为纯 TypeScript 实现，直接解析 .pak（支持 AES 加密，
-含 bitflip 变体），**无需下载 umodel**；其余导出转换类工具需要 umodel 可执行文件
+面向 [umodel](https://www.gildor.org/en/projects/umodel) 的 MCP 服务器，
+让任意 MCP 客户端通过自然语言完成 Unreal Engine 游戏资源的**列表、解包、导出**操作
+
+## 特性
+
+- **纯解包零依赖**：`pak_list` / `pak_extract` 为纯 TypeScript 实现，直接解析 .pak
+  索引并提取原始 `.uasset/.uexp` 文件，无需下载 umodel
+- **支持加密 pak**：AES-256 索引/条目加密，含标准模式与 bitflip 变体；
+  密钥仅存会话内存
+- **完整导出链路**：网格、贴图、动画、声音导出为 gltf、psk、png、dds 等格式
+  （依赖 umodel 可执行文件）
+
+## 环境要求
+
+- Node.js 18 或更高版本
+- 任意支持 MCP 的客户端（Hermes 、Claude Code、Cursor、PI、Codex 等）
+- 仅导出转换功能需要：[umodel](https://www.gildor.org/en/projects/umodel)
 
 ## 安装
 
-**方式一：npx 手动注册** —— 在 MCP 客户端配置中直接写：
+### 标准配置
 
 ```json
 {
@@ -21,14 +36,32 @@
 }
 ```
 
-**方式二：从源码运行** —— 克隆本仓库后：
+也可以直接把这句话发给你的 agent："帮我安装并注册 umodel-mcp，重载 MCP 连接后验证可用"
+
+<details>
+<summary>Claude Code / Codex（CLI 一键添加）</summary>
 
 ```bash
+claude mcp add umodel npx -- -y umodel-mcp
+```
+
+```bash
+codex mcp add umodel npx "-y" "umodel-mcp"
+```
+
+</details>
+
+<details>
+<summary>从源码运行</summary>
+
+```bash
+git clone git@github.com:CHA1007/Umodel-MCP.git
+cd Umodel-MCP
 npm install
 npm run build
 ```
 
-然后在配置中注册：
+然后在 MCP 客户端配置中注册：
 
 ```json
 {
@@ -41,10 +74,9 @@ npm run build
 }
 ```
 
-要求 Node.js ≥ 18无需任何配置文件或环境变量，
-改完配置后重启客户端或重新加载 MCP 连接即可
+</details>
 
-## 工具（13 个）
+## 工具
 
 | 工具 | 对应 umodel 命令 | 说明 |
 |------|------------------|------|
@@ -71,4 +103,7 @@ npm run build
   用于学习、研究、备份等合法用途
 - 请遵守相关游戏的用户协议与所在地区的法律法规；
   因使用本项目产生的任何版权、协议纠纷或损失，作者概不负责
-- AES 密钥等敏感信息仅保存在会话内存中，不会写入任何文件
+
+## 许可证
+
+[MIT](LICENSE) © CHA1007
