@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CHA1007/Umodel-MCP.git"
+    "url": "git+https://github.com/CHA1007/Umodel-MCP.git"
   },
   "keywords": [
     "mcp",
