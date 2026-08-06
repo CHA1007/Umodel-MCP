@@ -3,10 +3,11 @@
 面向 [umodel（UE Viewer）](https://www.gildor.org/en/projects/umodel) 的 MCP 服务器，
 让 Pi / 任意 MCP 客户端可以通过自然语言完成 Unreal Engine 游戏资源的**列表、解包、导出**操作。
 
-## 功能（12 个工具）
+## 功能（13 个工具）
 
 | 工具 | 对应 umodel 命令 | 说明 |
 |------|------------------|------|
+| `umodel_setup_check` | — | 诊断当前配置，报告缺失项并给出下一步建议（新环境先跑这个） |
 | `umodel_version` | `-version` | 验证可执行文件可用 |
 | `umodel_config_get` / `umodel_config_set` | — | 读取/持久化配置 |
 | `umodel_game_list` | `-gamelist` / `-taglist` | 查看支持的游戏及 `-game=` 标签 |
@@ -96,6 +97,9 @@ nrc_extract  { filters: ["SKM_PC2"], out: "C:/export/nrc" }
 - 命令行参数以 UEViewer 官方源码（`UmodelTool/Main.cpp`）为准。
 - 加密 pak 需要通过 `aesKeys`（或 umodel-mcp.json）提供 AES key。
 - 导出结果默认写入 `outputDir`，工具返回中会包含实际执行的完整命令行，便于排查。
+- 列表/导出类工具均支持 `json: true` 参数，返回结构化 JSON 供程序消费；
+  `umodel_list_objects` 另支持 `filter`（行级子串过滤）与 `skip`/`limit`（分页），
+  适合在超大包里定位对象。
 
 ## NRC（洛克王国：世界）支持
 
