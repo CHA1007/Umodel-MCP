@@ -3,20 +3,16 @@ import os from "node:os";
 import path from "node:path";
 
 export interface UmodelConfig {
-  
   umodelExe?: string;
-  
   gamePath?: string;
-  
   gameTag?: string;
-  
   aesKeys?: string[];
-  
   outputDir?: string;
-  
   defaultArgs?: string[];
-  
   timeoutMs?: number;
+  nrcPakDir?: string;
+  nrcOutputDir?: string;
+  nrcAesKey?: string;
 }
 
 function configCandidates(): string[] {

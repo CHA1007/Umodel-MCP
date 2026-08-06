@@ -7,6 +7,7 @@ import { z } from "zod";
 import { findConfigFile, loadConfig, saveConfig } from "./config.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
 import { listTree } from "./tree.js";
+import { extractEntry, listPakFiles, parsePakIndex } from "./nrc.js";
 
 const server = new McpServer({
   name: "umodel-mcp",
@@ -273,6 +274,122 @@ server.registerTool(
       msg += `\n\nSaved packages under: ${out}`;
       msg += `\n\n--- output structure ---\n${listTree(out, { maxEntries: 100 })}`;
     }
+    return text(msg);
+  },
+);
+
+server.registerTool(
+  "nrc_list",
+  {
+    title: "List files inside NRC (洛克王国：世界) paks",
+    description:
+      "Decrypt the custom-encrypted index of NRC pak files and list matching asset paths. " +
+      "Use this before nrc_extract to locate assets (meshes/textures/animations).",
+    inputSchema: z.object({
+      filters: z.array(z.string()).min(1).describe("Case-insensitive substrings to match, e.g. ['SKM_PC2']"),
+      pakDir: z.string().optional().describe("Pak directory. Defaults to configured nrcPakDir."),
+      pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
+      limit: z.number().int().positive().optional().describe("Max entries to return (default 200)"),
+    }),
+  },
+  async ({ filters, pakDir, pakFilter, limit }) => {
+    const cfg = loadConfig();
+    const dir = pakDir ?? cfg.nrcPakDir;
+    if (!dir) return text("No pak directory given: pass 'pakDir' or configure nrcPakDir.");
+    const paks = listPakFiles(dir, pakFilter);
+    if (paks.length === 0) return text(`No .pak files found in ${dir}`);
+    const cap = limit ?? 200;
+    const found: string[] = [];
+    let scanned = 0;
+    for (const p of paks) {
+      if (found.length >= cap) break;
+      let index;
+      try {
+        index = parsePakIndex(p, cfg.nrcAesKey);
+      } catch (e) {
+        found.push(`[error] ${path.basename(p)}: ${e}`);
+        continue;
+      }
+      if (!index) continue;
+      scanned++;
+      for (const e of index.entries) {
+        if (found.length >= cap) break;
+        const lower = e.path.toLowerCase();
+        if (filters.some((f) => lower.includes(f.toLowerCase()))) {
+          found.push(`${e.pak} :: ${e.path}  (${e.size} bytes)`);
+        }
+      }
+    }
+    if (found.length === 0)
+      return text(`No matches for [${filters.join(", ")}] after scanning ${scanned}/${paks.length} paks in ${dir}`);
+    return text(
+      `Scanned ${scanned}/${paks.length} paks in ${dir}\nMatches for [${filters.join(", ")}]:\n` +
+        found.join("\n") +
+        (found.length >= cap ? "\n... (truncated)" : ""),
+    );
+  },
+);
+
+server.registerTool(
+  "nrc_extract",
+  {
+    title: "Extract files from NRC (洛克王国：世界) paks",
+    description:
+      "Extract raw .uasset/.uexp files from custom-encrypted NRC paks. " +
+      "The extracted loose files can then be converted with umodel_export (point it at the output directory).",
+    inputSchema: z.object({
+      filters: z.array(z.string()).min(1).describe("Case-insensitive substrings to match, e.g. ['SKM_PC2']"),
+      pakDir: z.string().optional().describe("Pak directory. Defaults to configured nrcPakDir."),
+      out: z.string().optional().describe("Output directory. Defaults to configured nrcOutputDir."),
+      pakFilter: z.string().optional().describe("Only scan paks whose file name contains this substring"),
+      maxFiles: z.number().int().positive().optional().describe("Max files to extract (default 200)"),
+    }),
+  },
+  async ({ filters, pakDir, out, pakFilter, maxFiles }) => {
+    const cfg = loadConfig();
+    const dir = pakDir ?? cfg.nrcPakDir;
+    const outDir = out ?? cfg.nrcOutputDir;
+    if (!dir) return text("No pak directory given: pass 'pakDir' or configure nrcPakDir.");
+    if (!outDir) return text("No output directory given: pass 'out' or configure nrcOutputDir.");
+    const paks = listPakFiles(dir, pakFilter);
+    if (paks.length === 0) return text(`No .pak files found in ${dir}`);
+    const cap = maxFiles ?? 200;
+    const extracted: string[] = [];
+    const warnings: string[] = [];
+    for (const p of paks) {
+      if (extracted.length >= cap) break;
+      let index;
+      try {
+        index = parsePakIndex(p, cfg.nrcAesKey);
+      } catch {
+        continue;
+      }
+      if (!index) continue;
+      for (const e of index.entries) {
+        if (extracted.length >= cap) break;
+        const lower = e.path.toLowerCase();
+        if (!filters.some((f) => lower.includes(f.toLowerCase()))) continue;
+        const m = e.method.toLowerCase();
+        if (m !== "none" && m !== "zlib" && m !== "gzip") {
+          warnings.push(`${e.path}: unsupported compression (${e.method}), skipped`);
+          continue;
+        }
+        try {
+          extractEntry(p, e, outDir, cfg.nrcAesKey);
+          extracted.push(`${e.path}  (${e.size} bytes)`);
+        } catch (err) {
+          warnings.push(`${e.path}: ${err}`);
+        }
+      }
+    }
+    let msg: string;
+    if (extracted.length === 0) {
+      msg = `Nothing extracted for [${filters.join(", ")}].`;
+    } else {
+      msg = `Extracted ${extracted.length} file(s) to ${outDir}:\n` + extracted.join("\n");
+      msg += `\n\n--- output structure ---\n${listTree(outDir, { maxEntries: 100 })}`;
+    }
+    if (warnings.length) msg += `\n\nWarnings:\n` + warnings.slice(0, 20).join("\n");
     return text(msg);
   },
 );
