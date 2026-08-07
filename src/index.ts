@@ -32,6 +32,10 @@ function section(label: string, lines: string[]): string {
   return lines.length > 0 ? `\n\n${label}\n${lines.join("\n")}` : "";
 }
 
+function rememberNote(fields: string[]): string {
+  return fields.length > 0 ? `\n\n(remembered in session: ${fields.join(", ")})` : "";
+}
+
 function outputTree(dir: string): string {
   return `\n\n--- Output tree ---\n${listTree(dir, { maxEntries: 100 })}`;
 }
@@ -286,10 +290,10 @@ function preflightGameTag(pkg: string | undefined, gamePath: string | undefined,
 function preflightUmodel(
   pkg: string,
   opts: { gamePath?: string; gameTag?: string; aesKeys?: string[] },
-): ReturnType<typeof errorText> | null {
-  applyOverrides(opts);
+): { blocked: ReturnType<typeof errorText> | null; remembered: string[] } {
+  const remembered = applyOverrides(opts);
   const err = preflightAes(pkg, opts.gamePath, opts.aesKeys) ?? preflightGameTag(pkg, opts.gamePath, opts.gameTag) ?? preflightExe();
-  return err ? errorText(err) : null;
+  return { blocked: err ? errorText(err) : null, remembered };
 }
 
 interface PakScanArgs {
@@ -301,10 +305,17 @@ interface PakScanArgs {
 
 function resolvePakScan(
   args: PakScanArgs,
-): { error: ReturnType<typeof errorText> } | { dir: string; paks: string[]; key: PakKey } {
-  rememberDirectory(args.pakDir);
-  if (args.aesKey) session.pakAesKey = args.aesKey;
-  if (args.aesMode) session.pakAesMode = args.aesMode;
+): { error: ReturnType<typeof errorText> } | { dir: string; paks: string[]; key: PakKey; remembered: string[] } {
+  const remembered: string[] = [];
+  if (rememberDirectory(args.pakDir)) remembered.push("gamePath");
+  if (args.aesKey) {
+    session.pakAesKey = args.aesKey;
+    remembered.push("pakAesKey");
+  }
+  if (args.aesMode) {
+    session.pakAesMode = args.aesMode;
+    remembered.push("pakAesMode");
+  }
   const dir = args.pakDir ?? session.gamePath;
   if (!dir) {
     return { error: errorText("No pak directory provided and no gamePath in session. Ask the user for the game/pak directory first.") };
@@ -315,6 +326,7 @@ function resolvePakScan(
     dir,
     paks,
     key: { keyHex: args.aesKey ?? session.pakAesKey, mode: args.aesMode ?? session.pakAesMode ?? "standard" },
+    remembered,
   };
 }
 
@@ -406,7 +418,7 @@ server.registerTool(
     }),
   },
   async ({ directory, extensions, limit, json }) => {
-    rememberDirectory(directory);
+    const remembered = rememberDirectory(directory) ? ["gamePath"] : [];
     const dir = directory ?? session.gamePath;
     if (!dir) return errorText("No directory provided and no gamePath in session. Ask the user for the game/pak directory first.");
     if (!fs.existsSync(dir)) return errorText(`Directory does not exist: ${dir}`);
@@ -446,7 +458,7 @@ server.registerTool(
     if (json)
       return text(
         JSON.stringify(
-          { directory: dir, count: found.length, truncated: found.length >= cap, files: found, encryptedPaks: encrypted },
+          { directory: dir, count: found.length, truncated: found.length >= cap, files: found, encryptedPaks: encrypted, remembered },
           null,
           2,
         ),
@@ -459,7 +471,7 @@ server.registerTool(
         `\n\n⚠ Encrypted paks (AES key required, otherwise umodel pops a blocking dialog):\n` +
         encrypted.map((e) => `${e.pak} (index ${e.index ? "" : "not "}encrypted, entries ${e.entries ? "" : "not "}encrypted)`).join("\n");
     }
-    return text(msg);
+    return text(msg + rememberNote(remembered));
   },
 );
 
@@ -478,8 +490,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, filter, skip, limit, json, ...rest }) => {
-    const blocked = preflightUmodel(pkg, rest);
-    if (blocked) return blocked;
+    const pre = preflightUmodel(pkg, rest);
+    if (pre.blocked) return pre.blocked;
     const args = ["-list", ...commonArgs(session), pkg];
     const r = await runUmodel(session.umodelExe, args);
     const ok = r.exitCode === 0;
@@ -488,7 +500,7 @@ server.registerTool(
       const { total, lines } = filterLines(r.stdout, filter, skip, limit);
       return respond(
         JSON.stringify(
-          { command: r.command, exitCode: r.exitCode, timedOut: r.timedOut, stderr: r.stderr, totalLines: total, lines },
+          { command: r.command, exitCode: r.exitCode, timedOut: r.timedOut, stderr: r.stderr, totalLines: total, lines, remembered: pre.remembered },
           null,
           2,
         ),
@@ -500,9 +512,9 @@ server.registerTool(
       const msg =
         formatResult({ ...r, stdout: lines.join("\n") }) +
         `\n\n${total} line(s) matched, returning ${lines.length} in this page`;
-      return respond(msg, ok);
+      return respond(msg + rememberNote(pre.remembered), ok);
     }
-    return respond(formatResult(r), ok);
+    return respond(formatResult(r) + rememberNote(pre.remembered), ok);
   },
 );
 
@@ -518,13 +530,13 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, json, ...rest }) => {
-    const blocked = preflightUmodel(pkg, rest);
-    if (blocked) return blocked;
+    const pre = preflightUmodel(pkg, rest);
+    if (pre.blocked) return pre.blocked;
     const args = ["-pkginfo", ...commonArgs(session), pkg];
     const r = await runUmodel(session.umodelExe, args);
     const ok = r.exitCode === 0;
-    if (json) return respond(JSON.stringify(r, null, 2), ok);
-    return respond(formatResult(r), ok);
+    if (json) return respond(JSON.stringify({ ...r, remembered: pre.remembered }, null, 2), ok);
+    return respond(formatResult(r) + rememberNote(pre.remembered), ok);
   },
 );
 
@@ -559,8 +571,8 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
-    const blocked = preflightUmodel(pkg, opts);
-    if (blocked) return blocked;
+    const pre = preflightUmodel(pkg, opts);
+    if (pre.blocked) return pre.blocked;
     const args: string[] = ["-export"];
     if (opts.meshFormat) args.push(`-${opts.meshFormat}`);
     if (opts.textureFormat === "png") args.push("-png");
@@ -581,13 +593,13 @@ server.registerTool(
     if (opts.className) args.push(opts.className);
     const r = await runUmodel(session.umodelExe, args, timeoutMs);
     const ok = r.exitCode === 0;
-    if (json) return respond(JSON.stringify({ ...r, out }, null, 2), ok);
+    if (json) return respond(JSON.stringify({ ...r, out, remembered: pre.remembered }, null, 2), ok);
     let msg = formatResult(r);
     if (ok && out) {
       msg += `\n\nFiles exported to: ${out}`;
       msg += outputTree(out);
     }
-    return respond(msg, ok);
+    return respond(msg + rememberNote(pre.remembered), ok);
   },
 );
 
@@ -607,19 +619,19 @@ server.registerTool(
     }),
   },
   async ({ package: pkg, timeoutMs, json, ...opts }) => {
-    const blocked = preflightUmodel(pkg, opts);
-    if (blocked) return blocked;
+    const pre = preflightUmodel(pkg, opts);
+    if (pre.blocked) return pre.blocked;
     const out = opts.out ?? resolveOutputDir();
     const args = ["-save", `-out=${out}`, ...commonArgs(session), pkg];
     const r = await runUmodel(session.umodelExe, args, timeoutMs);
     const ok = r.exitCode === 0;
-    if (json) return respond(JSON.stringify({ ...r, out }, null, 2), ok);
+    if (json) return respond(JSON.stringify({ ...r, out, remembered: pre.remembered }, null, 2), ok);
     let msg = formatResult(r);
     if (ok) {
       msg += `\n\nPackage files saved to: ${out}`;
       msg += outputTree(out);
     }
-    return respond(msg, ok);
+    return respond(msg + rememberNote(pre.remembered), ok);
   },
 );
 
@@ -650,7 +662,7 @@ server.registerTool(
   async ({ filters, pakDir, pakFilter, aesKey, aesMode, limit, json }) => {
     const scan = resolvePakScan({ pakDir, pakFilter, aesKey, aesMode });
     if ("error" in scan) return scan.error;
-    const { dir, paks, key } = scan;
+    const { dir, paks, key, remembered } = scan;
     const cap = limit ?? 200;
     const matches: { pak: string; path: string; size: number }[] = [];
     const { scanned, errors } = scanPakIndexes(paks, key, (_pakPath, index) => {
@@ -666,7 +678,7 @@ server.registerTool(
     if (json)
       return respond(
         JSON.stringify(
-          { directory: dir, scanned, totalPaks: paks.length, filters, truncated: matches.length >= cap, matches, errors },
+          { directory: dir, scanned, totalPaks: paks.length, filters, truncated: matches.length >= cap, matches, errors, remembered },
           null,
           2,
         ),
@@ -683,7 +695,7 @@ server.registerTool(
       matches.map((m) => `${m.pak} :: ${m.path}  (${m.size} bytes)`).join("\n") +
       (matches.length >= cap ? "\n...(truncated)" : "");
     msg += section("Errors:", errors.slice(0, 10));
-    return text(msg);
+    return text(msg + rememberNote(remembered));
   },
 );
 
@@ -715,7 +727,7 @@ server.registerTool(
   async ({ filters, pakDir, out, pakFilter, aesKey, aesMode, maxFiles, json }) => {
     const scan = resolvePakScan({ pakDir, pakFilter, aesKey, aesMode });
     if ("error" in scan) return scan.error;
-    const { dir, paks, key } = scan;
+    const { dir, paks, key, remembered } = scan;
     const outDir = out ?? path.join(resolveOutputDir(), "pak");
     const cap = maxFiles ?? 200;
     const extracted: { path: string; size: number }[] = [];
@@ -740,7 +752,7 @@ server.registerTool(
     });
     if (json)
       return respond(
-        JSON.stringify({ outDir, filters, truncated: extracted.length >= cap, extracted, warnings }, null, 2),
+        JSON.stringify({ outDir, filters, truncated: extracted.length >= cap, extracted, warnings, remembered }, null, 2),
         extracted.length > 0,
       );
     let msg: string;
@@ -752,7 +764,7 @@ server.registerTool(
       extracted.map((e) => `${e.path}  (${e.size} bytes)`).join("\n");
     msg += outputTree(outDir);
     msg += section("Warnings:", warnings.slice(0, 20));
-    return text(msg);
+    return text(msg + rememberNote(remembered));
   },
 );
 

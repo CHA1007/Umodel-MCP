@@ -41,11 +41,14 @@ test("applyOverrides 仅在目录存在时记住 gamePath", () => {
   const savedKeys = session.aesKeys;
   try {
     delete session.gamePath;
-    applyOverrides({ gamePath: path.join(dir, "missing"), gameTag: "ue4.27", aesKeys: ["0xabc"] });
+    assert.deepEqual(
+      applyOverrides({ gamePath: path.join(dir, "missing"), gameTag: "ue4.27", aesKeys: ["0xabc"] }),
+      ["gameTag", "aesKeys"],
+    );
     assert.equal(session.gamePath, undefined);
     assert.equal(session.gameTag, "ue4.27");
     assert.deepEqual(session.aesKeys, ["0xabc"]);
-    applyOverrides({ gamePath: dir });
+    assert.deepEqual(applyOverrides({ gamePath: dir }), ["gamePath"]);
     assert.equal(session.gamePath, dir);
   } finally {
     if (savedPath === undefined) delete session.gamePath;
@@ -62,11 +65,11 @@ test("rememberDirectory 只记住存在的目录", () => {
   const saved = session.gamePath;
   try {
     delete session.gamePath;
-    rememberDirectory(undefined);
+    assert.equal(rememberDirectory(undefined), false);
     assert.equal(session.gamePath, undefined);
-    rememberDirectory(path.join(dir, "missing"));
+    assert.equal(rememberDirectory(path.join(dir, "missing")), false);
     assert.equal(session.gamePath, undefined);
-    rememberDirectory(dir);
+    assert.equal(rememberDirectory(dir), true);
     assert.equal(session.gamePath, dir);
   } finally {
     if (saved === undefined) delete session.gamePath;
