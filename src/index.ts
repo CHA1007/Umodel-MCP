@@ -7,11 +7,13 @@ import { z } from "zod";
 import { applyOverrides, defaultOutputDir, findUmodelExes, rememberDirectory, resolveOutputDir, session } from "./session.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
 import { formatSize, listTree } from "./tree.js";
-import { detectPakEncryption, extractEntry, listPakFiles, parsePakIndex, SUPPORTED_COMPRESSION, type PakKey } from "./pak.js";
+import { detectPakEncryption, extractEntry, listPakFiles, parsePakIndex, SUPPORTED_COMPRESSION, type PakAesMode, type PakKey } from "./pak.js";
+
+const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
 const server = new McpServer({
   name: "umodel-mcp",
-  version: "0.2.0",
+  version: pkg.version,
 });
 
 function text(s: string) {
@@ -24,6 +26,14 @@ function errorText(s: string) {
 
 function respond(s: string, ok: boolean) {
   return ok ? text(s) : errorText(s);
+}
+
+function section(label: string, lines: string[]): string {
+  return lines.length > 0 ? `\n\n${label}\n${lines.join("\n")}` : "";
+}
+
+function outputTree(dir: string): string {
+  return `\n\n--- Output tree ---\n${listTree(dir, { maxEntries: 100 })}`;
 }
 
 const jsonFlag = z.boolean().optional().describe("Return machine-readable JSON instead of formatted text.");
@@ -280,6 +290,32 @@ function preflightUmodel(
   applyOverrides(opts);
   const err = preflightAes(pkg, opts.gamePath, opts.aesKeys) ?? preflightGameTag(pkg, opts.gamePath, opts.gameTag) ?? preflightExe();
   return err ? errorText(err) : null;
+}
+
+interface PakScanArgs {
+  pakDir?: string;
+  pakFilter?: string;
+  aesKey?: string;
+  aesMode?: PakAesMode;
+}
+
+function resolvePakScan(
+  args: PakScanArgs,
+): { error: ReturnType<typeof errorText> } | { dir: string; paks: string[]; key: PakKey } {
+  rememberDirectory(args.pakDir);
+  if (args.aesKey) session.pakAesKey = args.aesKey;
+  if (args.aesMode) session.pakAesMode = args.aesMode;
+  const dir = args.pakDir ?? session.gamePath;
+  if (!dir) {
+    return { error: errorText("No pak directory provided and no gamePath in session. Ask the user for the game/pak directory first.") };
+  }
+  const paks = listPakFiles(dir, args.pakFilter);
+  if (paks.length === 0) return { error: errorText(`No .pak files found in ${dir}`) };
+  return {
+    dir,
+    paks,
+    key: { keyHex: args.aesKey ?? session.pakAesKey, mode: args.aesMode ?? session.pakAesMode ?? "standard" },
+  };
 }
 
 function scanPakIndexes(
@@ -549,7 +585,7 @@ server.registerTool(
     let msg = formatResult(r);
     if (ok && out) {
       msg += `\n\nFiles exported to: ${out}`;
-      msg += `\n\n--- Output tree ---\n${listTree(out, { maxEntries: 100 })}`;
+      msg += outputTree(out);
     }
     return respond(msg, ok);
   },
@@ -581,7 +617,7 @@ server.registerTool(
     let msg = formatResult(r);
     if (ok) {
       msg += `\n\nPackage files saved to: ${out}`;
-      msg += `\n\n--- Output tree ---\n${listTree(out, { maxEntries: 100 })}`;
+      msg += outputTree(out);
     }
     return respond(msg, ok);
   },
@@ -612,14 +648,9 @@ server.registerTool(
     }),
   },
   async ({ filters, pakDir, pakFilter, aesKey, aesMode, limit, json }) => {
-    rememberDirectory(pakDir);
-    if (aesKey) session.pakAesKey = aesKey;
-    if (aesMode) session.pakAesMode = aesMode;
-    const dir = pakDir ?? session.gamePath;
-    const key: PakKey = { keyHex: aesKey ?? session.pakAesKey, mode: aesMode ?? session.pakAesMode ?? "standard" };
-    if (!dir) return errorText("No pak directory provided and no gamePath in session. Ask the user for the game/pak directory first.");
-    const paks = listPakFiles(dir, pakFilter);
-    if (paks.length === 0) return errorText(`No .pak files found in ${dir}`);
+    const scan = resolvePakScan({ pakDir, pakFilter, aesKey, aesMode });
+    if ("error" in scan) return scan.error;
+    const { dir, paks, key } = scan;
     const cap = limit ?? 200;
     const matches: { pak: string; path: string; size: number }[] = [];
     const { scanned, errors } = scanPakIndexes(paks, key, (_pakPath, index) => {
@@ -642,15 +673,16 @@ server.registerTool(
         matches.length > 0,
       );
     if (matches.length === 0) {
-      let msg = `Scanned ${scanned}/${paks.length} pak(s) in ${dir}; no entries match [${filters.join(", ")}]`;
-      if (errors.length) msg += `\n\nErrors (first 10):\n${errors.slice(0, 10).join("\n")}`;
-      return errorText(msg);
+      return errorText(
+        `Scanned ${scanned}/${paks.length} pak(s) in ${dir}; no entries match [${filters.join(", ")}]` +
+          section("Errors (first 10):", errors.slice(0, 10)),
+      );
     }
     let msg =
       `Scanned ${scanned}/${paks.length} pak(s) in ${dir}\nEntries matching [${filters.join(", ")}]:\n` +
       matches.map((m) => `${m.pak} :: ${m.path}  (${m.size} bytes)`).join("\n") +
       (matches.length >= cap ? "\n...(truncated)" : "");
-    if (errors.length) msg += `\n\nErrors:\n${errors.slice(0, 10).join("\n")}`;
+    msg += section("Errors:", errors.slice(0, 10));
     return text(msg);
   },
 );
@@ -681,15 +713,10 @@ server.registerTool(
     }),
   },
   async ({ filters, pakDir, out, pakFilter, aesKey, aesMode, maxFiles, json }) => {
-    rememberDirectory(pakDir);
-    if (aesKey) session.pakAesKey = aesKey;
-    if (aesMode) session.pakAesMode = aesMode;
-    const dir = pakDir ?? session.gamePath;
+    const scan = resolvePakScan({ pakDir, pakFilter, aesKey, aesMode });
+    if ("error" in scan) return scan.error;
+    const { dir, paks, key } = scan;
     const outDir = out ?? path.join(resolveOutputDir(), "pak");
-    const key: PakKey = { keyHex: aesKey ?? session.pakAesKey, mode: aesMode ?? session.pakAesMode ?? "standard" };
-    if (!dir) return errorText("No pak directory provided and no gamePath in session. Ask the user for the game/pak directory first.");
-    const paks = listPakFiles(dir, pakFilter);
-    if (paks.length === 0) return errorText(`No .pak files found in ${dir}`);
     const cap = maxFiles ?? 200;
     const extracted: { path: string; size: number }[] = [];
     const warnings: string[] = [];
@@ -718,15 +745,13 @@ server.registerTool(
       );
     let msg: string;
     if (extracted.length === 0) {
-      msg = `No files matching [${filters.join(", ")}] were extracted.`;
-      if (warnings.length) msg += `\n\nWarnings:\n` + warnings.slice(0, 20).join("\n");
-      return errorText(msg);
+      return errorText(`No files matching [${filters.join(", ")}] were extracted.` + section("Warnings:", warnings.slice(0, 20)));
     }
     msg =
       `Extracted ${extracted.length} file(s) to ${outDir}:\n` +
       extracted.map((e) => `${e.path}  (${e.size} bytes)`).join("\n");
-    msg += `\n\n--- Output tree ---\n${listTree(outDir, { maxEntries: 100 })}`;
-    if (warnings.length) msg += `\n\nWarnings:\n` + warnings.slice(0, 20).join("\n");
+    msg += outputTree(outDir);
+    msg += section("Warnings:", warnings.slice(0, 20));
     return text(msg);
   },
 );
