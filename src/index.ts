@@ -7,7 +7,17 @@ import { z } from "zod";
 import { applyOverrides, defaultOutputDir, findUmodelExes, rememberDirectory, resolveOutputDir, session } from "./session.js";
 import { commonArgs, formatResult, runUmodel } from "./umodel.js";
 import { formatSize, listTree } from "./tree.js";
-import { detectPakEncryption, extractEntry, listPakFiles, parsePakIndex, SUPPORTED_COMPRESSION, type PakAesMode, type PakKey } from "./pak.js";
+import {
+  detectPakEncryption,
+  extractEntry,
+  listPakFiles,
+  PakParseError,
+  parsePakIndex,
+  SUPPORTED_COMPRESSION,
+  type PakAesMode,
+  type PakIndex,
+  type PakKey,
+} from "./pak.js";
 
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
@@ -263,13 +273,12 @@ function preflightGameTag(pkg: string | undefined, gamePath: string | undefined,
       continue;
     }
     for (const p of paks) {
-      let index;
+      let index: PakIndex;
       try {
         index = parsePakIndex(p, { keyHex: session.pakAesKey, mode: session.pakAesMode ?? "standard" });
       } catch {
         continue;
       }
-      if (!index) continue;
       const cooked = index.entries.some((e) => {
         const lp = e.path.toLowerCase();
         return lp.endsWith(".uasset") || lp.endsWith(".uexp");
@@ -333,19 +342,18 @@ function resolvePakScan(
 function scanPakIndexes(
   paks: string[],
   key: PakKey,
-  onIndex: (pakPath: string, index: NonNullable<ReturnType<typeof parsePakIndex>>) => boolean,
+  onIndex: (pakPath: string, index: PakIndex) => boolean,
 ): { scanned: number; errors: string[] } {
   let scanned = 0;
   const errors: string[] = [];
   for (const p of paks) {
-    let index;
+    let index: PakIndex;
     try {
       index = parsePakIndex(p, key);
     } catch (e) {
-      errors.push(`${path.basename(p)}: ${e}`);
+      errors.push(`${path.basename(p)}: ${e instanceof PakParseError ? `[${e.kind}] ${e.message}` : String(e)}`);
       continue;
     }
-    if (!index) continue;
     scanned++;
     if (!onIndex(p, index)) break;
   }

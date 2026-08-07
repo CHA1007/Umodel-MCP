@@ -10,6 +10,7 @@ import {
   extractEntry,
   listPakFiles,
   normalizePakPath,
+  PakParseError,
   parsePakIndex,
 } from "./pak.js";
 
@@ -158,13 +159,34 @@ test("parsePakIndex 解析明文 pak 索引", () => {
   assert.equal(a.pak, "pakchunk0.pak");
 });
 
-test("parsePakIndex 对非 pak 文件返回 null", () => {
+test("parsePakIndex 拒绝非 pak 文件", () => {
   const dir = tmpDir();
   const p = path.join(dir, "fake.pak");
   fs.writeFileSync(p, Buffer.alloc(512));
-  assert.equal(parsePakIndex(p), null);
+  assert.throws(() => parsePakIndex(p), (e: unknown) => e instanceof PakParseError && e.kind === "not-pak");
   fs.writeFileSync(p, Buffer.alloc(10));
-  assert.equal(parsePakIndex(p), null);
+  assert.throws(() => parsePakIndex(p), (e: unknown) => e instanceof PakParseError && e.kind === "not-pak");
+});
+
+test("parsePakIndex 用错误密钥时归因为 wrong-key", () => {
+  const dir = tmpDir();
+  const pakPath = path.join(dir, "enc.pak");
+  fs.writeFileSync(pakPath, buildPak([{ dir: "Game/Content/", name: "A.uasset", data: Buffer.from("secret") }], TEST_KEY));
+  const wrongKey = "ff".repeat(32);
+  assert.throws(
+    () => parsePakIndex(pakPath, { keyHex: wrongKey, mode: "standard" }),
+    (e: unknown) => e instanceof PakParseError && e.kind === "wrong-key",
+  );
+});
+
+test("parsePakIndex 对不支持的索引布局归因为 unsupported-version", () => {
+  const dir = tmpDir();
+  const pakPath = path.join(dir, "old.pak");
+  const buf = buildPak([{ dir: "Game/Content/", name: "A.uasset", data: Buffer.from("x") }]);
+  const primaryOffset = Number(buf.readBigUInt64LE(buf.length - 0xcd + 9));
+  buf.writeInt32LE(0, primaryOffset + 26);
+  fs.writeFileSync(pakPath, buf);
+  assert.throws(() => parsePakIndex(pakPath), (e: unknown) => e instanceof PakParseError && e.kind === "unsupported-version");
 });
 
 test("parsePakIndex 解析索引加密 pak（standard 模式）", () => {

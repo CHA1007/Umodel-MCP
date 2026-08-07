@@ -13,6 +13,18 @@ export interface PakKey {
   mode: PakAesMode;
 }
 
+export type PakParseErrorKind = "not-pak" | "unsupported-version" | "wrong-key";
+
+export class PakParseError extends Error {
+  constructor(
+    public kind: PakParseErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PakParseError";
+  }
+}
+
 export const SUPPORTED_COMPRESSION = new Set(["none", "zlib", "gzip"]);
 
 function requireKey(keyHex?: string): Buffer {
@@ -186,17 +198,17 @@ function decodeEntry(blob: Buffer, offset: number, methods: string[]): Omit<PakE
   };
 }
 
-export function parsePakIndex(pakPath: string, key: PakKey = { mode: "standard" }): PakIndex | null {
+export function parsePakIndex(pakPath: string, key: PakKey = { mode: "standard" }): PakIndex {
   const { keyHex, mode } = key;
   const fd = fs.openSync(pakPath, "r");
   try {
     const stat = fs.fstatSync(fd);
-    if (stat.size < TAIL_SIZE) return null;
+    if (stat.size < TAIL_SIZE) throw new PakParseError("not-pak", "file too small to contain a pak footer");
     const tail = readAt(fd, stat.size - TAIL_SIZE, TAIL_SIZE);
     const encryptedIndex = tail[0];
     const magic = tail.readUInt32LE(1);
     const version = tail.readUInt32LE(5);
-    if (magic !== PAK_MAGIC) return null;
+    if (magic !== PAK_MAGIC) throw new PakParseError("not-pak", `bad pak magic 0x${magic.toString(16)}`);
     const indexOffset = Number(tail.readBigUInt64LE(9));
     const indexSize = Number(tail.readBigUInt64LE(17));
     const compressionMethods: string[] = ["None"];
@@ -208,40 +220,55 @@ export function parsePakIndex(pakPath: string, key: PakKey = { mode: "standard" 
     }
 
     const decrypt = (buf: Buffer) => (encryptedIndex ? aesDecrypt(buf, requireKey(keyHex), mode) : buf);
-    const primary = new Reader(decrypt(readAt(fd, indexOffset, indexSize)));
-    const mountPoint = primary.fstring();
-    primary.skip(4);
-    primary.skip(8);
-    const hasPathHash = primary.i32();
-    if (!hasPathHash) return null;
-    primary.skip(36);
-    const hasDirIndex = primary.i32();
-    if (!hasDirIndex) return null;
-    const dirIndexOffset = primary.u64();
-    const dirIndexSize = primary.u64();
-    primary.skip(20);
-    const entriesSize = primary.i32();
-    const entriesBlob = primary.bytes(entriesSize);
-    const nonEncodedCount = primary.i32();
-    if (nonEncodedCount !== 0) return null;
+    const structural = (detail: string): PakParseError =>
+      encryptedIndex
+        ? new PakParseError("wrong-key", `index decryption produced garbage (${detail}); the AES key is probably wrong`)
+        : new PakParseError("unsupported-version", `unsupported pak index layout, version ${version}: ${detail}`);
+    try {
+      const primary = new Reader(decrypt(readAt(fd, indexOffset, indexSize)));
+      const mountPoint = primary.fstring();
+      primary.skip(4);
+      primary.skip(8);
+      const hasPathHash = primary.i32();
+      if (!hasPathHash) throw structural("no path-hash table");
+      primary.skip(36);
+      const hasDirIndex = primary.i32();
+      if (!hasDirIndex) throw structural("no directory index");
+      const dirIndexOffset = primary.u64();
+      const dirIndexSize = primary.u64();
+      primary.skip(20);
+      const entriesSize = primary.i32();
+      if (entriesSize < 0 || entriesSize > primary.data.length) throw structural(`bad entries size ${entriesSize}`);
+      const entriesBlob = primary.bytes(entriesSize);
+      const nonEncodedCount = primary.i32();
+      if (nonEncodedCount !== 0) throw structural("encoded entries are not supported");
 
-    const dir = new Reader(decrypt(readAt(fd, dirIndexOffset, dirIndexSize)));
-    const entries: PakEntry[] = [];
-    const dirCount = dir.i32();
-    for (let d = 0; d < dirCount; d++) {
-      const dirName = dir.fstring();
-      const n = dir.i32();
-      for (let i = 0; i < n; i++) {
-        const fileName = dir.fstring();
-        const entryOff = dir.i32();
-        if (entryOff === -2147483648 || entryOff < 0) continue;
-        const decoded = decodeEntry(entriesBlob, entryOff, compressionMethods);
-        if (!decoded) continue;
-        const full = (dirName ? dirName : "") + fileName;
-        entries.push({ pak: path.basename(pakPath), path: normalizePakPath(full), ...decoded });
+      const dir = new Reader(decrypt(readAt(fd, dirIndexOffset, dirIndexSize)));
+      const entries: PakEntry[] = [];
+      const dirCount = dir.i32();
+      if (dirCount < 0 || dirCount > 100000) throw structural(`bad directory count ${dirCount}`);
+      for (let d = 0; d < dirCount; d++) {
+        const dirName = dir.fstring();
+        const n = dir.i32();
+        for (let i = 0; i < n; i++) {
+          const fileName = dir.fstring();
+          const entryOff = dir.i32();
+          if (entryOff === -2147483648 || entryOff < 0) continue;
+          const decoded = decodeEntry(entriesBlob, entryOff, compressionMethods);
+          if (!decoded) continue;
+          const full = (dirName ? dirName : "") + fileName;
+          entries.push({ pak: path.basename(pakPath), path: normalizePakPath(full), ...decoded });
+        }
       }
+      return { pak: path.basename(pakPath), version, mountPoint, compressionMethods, entries };
+    } catch (e) {
+      if (e instanceof PakParseError) throw e;
+      if (encryptedIndex) {
+        if (!keyHex) throw e;
+        throw new PakParseError("wrong-key", "index decryption produced garbage; the AES key is probably wrong");
+      }
+      throw new PakParseError("unsupported-version", `unsupported pak index layout, version ${version}`);
     }
-    return { pak: path.basename(pakPath), version, mountPoint, compressionMethods, entries };
   } finally {
     fs.closeSync(fd);
   }
@@ -329,7 +356,7 @@ export function detectPakEncryption(pakPath: string): PakEncryptionInfo | null {
     if (indexSize > 0 && indexSize <= 256 * 1024 * 1024) {
       try {
         const idx = parsePakIndex(pakPath);
-        if (idx) return { pak: name, encryptedIndex: false, encryptedEntries: idx.entries.some((e) => e.encrypted) };
+        return { pak: name, encryptedIndex: false, encryptedEntries: idx.entries.some((e) => e.encrypted) };
       } catch {
         return null;
       }
