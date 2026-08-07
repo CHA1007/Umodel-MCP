@@ -20,18 +20,18 @@ test("formatResult 汇总命令输出并给出超时提示", () => {
   };
   const normal = formatResult(base);
   assert.ok(normal.includes('"umodel.exe" -version'));
-  assert.ok(normal.includes("退出码: 0"));
+  assert.ok(normal.includes("Exit code: 0"));
   assert.ok(normal.includes("ok"));
-  assert.ok(!normal.includes("弹窗"));
+  assert.ok(!normal.includes("dialog"));
 
   const timedOut = formatResult({ ...base, timedOut: true, exitCode: null });
-  assert.ok(timedOut.includes("（超时）"));
-  assert.ok(timedOut.includes("对话框"));
+  assert.ok(timedOut.includes("(timed out)"));
+  assert.ok(timedOut.includes("dialog"));
 });
 
 test("runUmodel 在未提供或路径无效时抛出引导性错误", () => {
   assert.throws(() => runUmodel(undefined, ["-version"]), /umodel_session_set/);
-  assert.throws(() => runUmodel("C:/missing/umodel.exe", ["-version"]), /不存在/);
+  assert.throws(() => runUmodel("C:/missing/umodel.exe", ["-version"]), /does not exist/);
 });
 
 test("runUmodel 执行并捕获子进程输出", async () => {

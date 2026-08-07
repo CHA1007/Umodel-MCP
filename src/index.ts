@@ -130,7 +130,7 @@ server.registerTool(
       else session.pakAesMode = args.pakAesMode;
     }
     if (args.aesKeys !== undefined) session.aesKeys = args.aesKeys.filter(Boolean);
-    return text(`会话已更新：\n${JSON.stringify(session, null, 2)}`);
+    return text(`Session updated:\n${JSON.stringify(session, null, 2)}`);
   },
 );
 
@@ -160,13 +160,13 @@ server.registerTool(
     const candidates = findUmodelExes(dirs);
     if (candidates.length === 0) {
       return errorText(
-        "未找到 umodel 可执行文件。请让用户从 https://www.gildor.org/en/projects/umodel 下载 UE Viewer，" +
-          "解压后提供 umodel_64.exe 的完整路径。",
+        "No umodel executable found. Ask the user to download UE Viewer from https://www.gildor.org/en/projects/umodel, " +
+          "extract it, and provide the full path to umodel_64.exe.",
       );
     }
     if (json) return text(JSON.stringify({ candidates }, null, 2));
     let msg =
-      `找到 ${candidates.length} 个候选 umodel 可执行文件（按修改时间倒序）：\n` +
+      `Found ${candidates.length} candidate umodel executable(s) (newest first):\n` +
       candidates
         .map((c) => `${c.path}  (${formatSize(c.size)}, ${c.mtime.slice(0, 10)})`)
         .join("\n");
@@ -177,21 +177,21 @@ server.registerTool(
         if (r.exitCode === 0) {
           session.umodelExe = top.path;
           session.umodelExeConfirmed = candidates.length === 1;
-          msg += `\n\n已验证并记住: ${top.path}\n${r.stdout.trim()}`;
+          msg += `\n\nVerified and remembered: ${top.path}\n${r.stdout.trim()}`;
           if (candidates.length > 1) {
             msg +=
-              `\n\n注意：机器上存在 ${candidates.length} 个 umodel 候选，当前记住的只是最新一个，处于未确认状态。` +
-              `不同 umodel 版本支持的游戏不同，请把候选列表展示给用户，询问目标游戏应使用哪个版本，` +
-              `然后用 umodel_session_set { umodelExe } 确认；否则面向游戏的工具会拒绝执行。`;
+              `\n\nNote: ${candidates.length} umodel candidates exist on this machine; the one remembered is just the newest and remains UNCONFIRMED. ` +
+              `Different umodel versions support different games. Show the candidate list to the user, ask which version to use for the target game, ` +
+              `then confirm it via umodel_session_set { umodelExe }; otherwise the per-game tools will refuse to run.`;
           }
           return text(msg);
         }
-        return errorText(msg + `\n\n验证失败（${top.path}），退出码: ${r.exitCode}\n${r.stderr.trim()}`);
+        return errorText(msg + `\n\nVerification failed (${top.path}), exit code: ${r.exitCode}\n${r.stderr.trim()}`);
       } catch (e) {
-        return errorText(msg + `\n\n验证失败（${top.path}）: ${e}`);
+        return errorText(msg + `\n\nVerification failed (${top.path}): ${e}`);
       }
     } else {
-      msg += "\n\n确认候选后调用 umodel_session_set 记住，或带 verify=true 重新调用以自动验证。";
+      msg += "\n\nAfter confirming a candidate, call umodel_session_set to remember it, or call again with verify=true to auto-verify.";
     }
     return text(msg);
   },
@@ -218,20 +218,20 @@ function preflightAes(pkg: string | undefined, gamePath: string | undefined, key
   }
   if (bad.size === 0) return null;
   return (
-    `检测到加密 pak，但未提供 AES key：${[...bad].join(", ")}。\n` +
-    `此时直接调用 umodel 会弹出“输入 AES key”的 GUI 弹窗并卡住，已阻止执行。\n` +
-    `请先向用户询问 AES key，然后用 umodel_session_set { aesKeys: ["0x..."] } 记住或传入 aesKeys 参数；` +
-    `若 umodel 不支持该游戏，可改用 pak_list/pak_extract（配合 pakAesKey）。`
+    `Encrypted pak detected but no AES key provided: ${[...bad].join(", ")}.\n` +
+    `Calling umodel now would pop up a blocking GUI dialog asking for the AES key, so the call was blocked.\n` +
+    `Ask the user for the AES key first, then remember it via umodel_session_set { aesKeys: ["0x..."] } or pass the aesKeys argument; ` +
+    `if umodel does not support this game, use pak_list/pak_extract instead (with pakAesKey).`
   );
 }
 
 function preflightExe(): string | null {
   if (!session.umodelExe || session.umodelExeConfirmed) return null;
   return (
-    `当前 umodel 可执行文件 ${session.umodelExe} 是自动发现/验证的，未经用户确认。` +
-    `不同 umodel 构建/版本支持的游戏不同，用错版本会导致解析失败或导出错误，已阻止执行。\n` +
-    `请调用 umodel_find_exe 获取候选列表并展示给用户，询问目标游戏应使用哪个 umodel 版本，` +
-    `然后用 umodel_session_set { umodelExe } 记住用户确认的路径。`
+    `The current umodel executable ${session.umodelExe} was auto-discovered/verified but not confirmed by the user. ` +
+    `Different umodel builds/versions support different games; using the wrong one causes parse failures or broken exports, so the call was blocked.\n` +
+    `Call umodel_find_exe to get the candidate list, show it to the user, ask which umodel version to use for the target game, ` +
+    `then remember the user-confirmed path via umodel_session_set { umodelExe }.`
   );
 }
 
@@ -262,11 +262,11 @@ function preflightGameTag(pkg: string | undefined, gamePath: string | undefined,
       });
       if (!cooked) continue;
       return (
-        `检测到 cooked（无版本号）UE 包，但未设置 gameTag：直接调用 umodel 会弹出“Unreal engine 4 version”GUI 弹窗并卡住，已阻止执行。\n` +
-        `请按以下顺序处理：\n` +
-        `1. 调用 umodel_game_list { tags: true } 查看该游戏是否有官方支持标签（例如 Roco Kingdom: World → gameTag=roco）；\n` +
-        `2. 若支持，传入 gameTag 参数或用 umodel_session_set { gameTag } 记住；\n` +
-        `3. 若不支持，向用户询问游戏所用的 Unreal Engine 版本，使用对应标签（如 ue4.27）。`
+        `Cooked (no version info) UE packages detected but gameTag is not set: calling umodel directly would pop up a blocking "Unreal engine 4 version" GUI dialog, so the call was blocked.\n` +
+        `Handle it in this order:\n` +
+        `1. Call umodel_game_list { tags: true } to check whether the game has an official tag (e.g. Roco Kingdom: World -> gameTag=roco);\n` +
+        `2. If so, pass the gameTag argument or remember it via umodel_session_set { gameTag };\n` +
+        `3. If not, ask the user which Unreal Engine version the game uses and use the matching tag (e.g. ue4.27).`
       );
     }
   }
@@ -325,8 +325,8 @@ server.registerTool(
     let msg = formatResult(r);
     if (exe && r.exitCode === 0) {
       msg +=
-        `\n\n已记住可执行文件: ${exe}（未确认状态）。` +
-        `若该路径是用户提供的，请调用 umodel_session_set { umodelExe } 确认后再执行面向游戏的工具。`;
+        `\n\nRemembered executable: ${exe} (UNCONFIRMED). ` +
+        `If this path came from the user, confirm it via umodel_session_set { umodelExe } before calling the per-game tools.`;
     }
     return respond(msg, r.exitCode === 0);
   },
@@ -372,8 +372,8 @@ server.registerTool(
   async ({ directory, extensions, limit, json }) => {
     rememberDirectory(directory);
     const dir = directory ?? session.gamePath;
-    if (!dir) return errorText("未提供目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
-    if (!fs.existsSync(dir)) return errorText(`目录不存在: ${dir}`);
+    if (!dir) return errorText("No directory provided and no gamePath in session. Ask the user for the game/pak directory first.");
+    if (!fs.existsSync(dir)) return errorText(`Directory does not exist: ${dir}`);
     const exts = new Set((extensions ?? PACKAGE_EXTENSIONS).map((e) => e.toLowerCase().replace(/^\./, "")));
     const cap = limit ?? 500;
     const found: string[] = [];
@@ -399,7 +399,7 @@ server.registerTool(
     };
     walk(dir, 0);
 
-    if (found.length === 0) return errorText(`在 ${dir} 下未找到任何包文件`);
+    if (found.length === 0) return errorText(`No package files found under ${dir}`);
     const encrypted: { pak: string; index: boolean; entries: boolean }[] = [];
     for (const f of found.filter((f) => f.toLowerCase().endsWith(".pak")).slice(0, 32)) {
       const info = detectPakEncryption(f);
@@ -416,12 +416,12 @@ server.registerTool(
         ),
       );
     let msg =
-      `在 ${dir} 下找到 ${found.length}${found.length >= cap ? "+" : ""} 个包文件：\n` +
+      `Found ${found.length}${found.length >= cap ? "+" : ""} package file(s) under ${dir}:\n` +
       found.join("\n");
     if (encrypted.length > 0) {
       msg +=
-        `\n\n⚠ 加密 pak（需要 AES key，否则 umodel 会弹窗卡死）：\n` +
-        encrypted.map((e) => `${e.pak} (索引${e.index ? "" : "未"}加密, 条目${e.entries ? "" : "未"}加密)`).join("\n");
+        `\n\n⚠ Encrypted paks (AES key required, otherwise umodel pops a blocking dialog):\n` +
+        encrypted.map((e) => `${e.pak} (index ${e.index ? "" : "not "}encrypted, entries ${e.entries ? "" : "not "}encrypted)`).join("\n");
     }
     return text(msg);
   },
@@ -463,7 +463,7 @@ server.registerTool(
       const { total, lines } = filterLines(r.stdout, filter, skip, limit);
       const msg =
         formatResult({ ...r, stdout: lines.join("\n") }) +
-        `\n\n共匹配 ${total} 行，本次返回 ${lines.length} 行`;
+        `\n\n${total} line(s) matched, returning ${lines.length} in this page`;
       return respond(msg, ok);
     }
     return respond(formatResult(r), ok);
@@ -548,8 +548,8 @@ server.registerTool(
     if (json) return respond(JSON.stringify({ ...r, out }, null, 2), ok);
     let msg = formatResult(r);
     if (ok && out) {
-      msg += `\n\n文件已导出到: ${out}`;
-      msg += `\n\n--- 输出结构 ---\n${listTree(out, { maxEntries: 100 })}`;
+      msg += `\n\nFiles exported to: ${out}`;
+      msg += `\n\n--- Output tree ---\n${listTree(out, { maxEntries: 100 })}`;
     }
     return respond(msg, ok);
   },
@@ -580,8 +580,8 @@ server.registerTool(
     if (json) return respond(JSON.stringify({ ...r, out }, null, 2), ok);
     let msg = formatResult(r);
     if (ok) {
-      msg += `\n\n包文件已保存到: ${out}`;
-      msg += `\n\n--- 输出结构 ---\n${listTree(out, { maxEntries: 100 })}`;
+      msg += `\n\nPackage files saved to: ${out}`;
+      msg += `\n\n--- Output tree ---\n${listTree(out, { maxEntries: 100 })}`;
     }
     return respond(msg, ok);
   },
@@ -617,9 +617,9 @@ server.registerTool(
     if (aesMode) session.pakAesMode = aesMode;
     const dir = pakDir ?? session.gamePath;
     const key: PakKey = { keyHex: aesKey ?? session.pakAesKey, mode: aesMode ?? session.pakAesMode ?? "standard" };
-    if (!dir) return errorText("未提供 pak 目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
+    if (!dir) return errorText("No pak directory provided and no gamePath in session. Ask the user for the game/pak directory first.");
     const paks = listPakFiles(dir, pakFilter);
-    if (paks.length === 0) return errorText(`在 ${dir} 中未找到 .pak 文件`);
+    if (paks.length === 0) return errorText(`No .pak files found in ${dir}`);
     const cap = limit ?? 200;
     const matches: { pak: string; path: string; size: number }[] = [];
     const { scanned, errors } = scanPakIndexes(paks, key, (_pakPath, index) => {
@@ -642,15 +642,15 @@ server.registerTool(
         matches.length > 0,
       );
     if (matches.length === 0) {
-      let msg = `扫描了 ${dir} 中 ${scanned}/${paks.length} 个 pak，未找到匹配 [${filters.join(", ")}] 的条目`;
-      if (errors.length) msg += `\n\n错误（前 10 条）:\n${errors.slice(0, 10).join("\n")}`;
+      let msg = `Scanned ${scanned}/${paks.length} pak(s) in ${dir}; no entries match [${filters.join(", ")}]`;
+      if (errors.length) msg += `\n\nErrors (first 10):\n${errors.slice(0, 10).join("\n")}`;
       return errorText(msg);
     }
     let msg =
-      `扫描了 ${dir} 中 ${scanned}/${paks.length} 个 pak\n匹配 [${filters.join(", ")}] 的条目：\n` +
+      `Scanned ${scanned}/${paks.length} pak(s) in ${dir}\nEntries matching [${filters.join(", ")}]:\n` +
       matches.map((m) => `${m.pak} :: ${m.path}  (${m.size} bytes)`).join("\n") +
-      (matches.length >= cap ? "\n...（已截断）" : "");
-    if (errors.length) msg += `\n\n错误:\n${errors.slice(0, 10).join("\n")}`;
+      (matches.length >= cap ? "\n...(truncated)" : "");
+    if (errors.length) msg += `\n\nErrors:\n${errors.slice(0, 10).join("\n")}`;
     return text(msg);
   },
 );
@@ -687,9 +687,9 @@ server.registerTool(
     const dir = pakDir ?? session.gamePath;
     const outDir = out ?? path.join(resolveOutputDir(), "pak");
     const key: PakKey = { keyHex: aesKey ?? session.pakAesKey, mode: aesMode ?? session.pakAesMode ?? "standard" };
-    if (!dir) return errorText("未提供 pak 目录且会话中也没有 gamePath。请先向用户询问游戏/pak 目录。");
+    if (!dir) return errorText("No pak directory provided and no gamePath in session. Ask the user for the game/pak directory first.");
     const paks = listPakFiles(dir, pakFilter);
-    if (paks.length === 0) return errorText(`在 ${dir} 中未找到 .pak 文件`);
+    if (paks.length === 0) return errorText(`No .pak files found in ${dir}`);
     const cap = maxFiles ?? 200;
     const extracted: { path: string; size: number }[] = [];
     const warnings: string[] = [];
@@ -718,15 +718,15 @@ server.registerTool(
       );
     let msg: string;
     if (extracted.length === 0) {
-      msg = `未提取到任何匹配 [${filters.join(", ")}] 的文件。`;
-      if (warnings.length) msg += `\n\n警告:\n` + warnings.slice(0, 20).join("\n");
+      msg = `No files matching [${filters.join(", ")}] were extracted.`;
+      if (warnings.length) msg += `\n\nWarnings:\n` + warnings.slice(0, 20).join("\n");
       return errorText(msg);
     }
     msg =
-      `已提取 ${extracted.length} 个文件到 ${outDir}：\n` +
+      `Extracted ${extracted.length} file(s) to ${outDir}:\n` +
       extracted.map((e) => `${e.path}  (${e.size} bytes)`).join("\n");
-    msg += `\n\n--- 输出结构 ---\n${listTree(outDir, { maxEntries: 100 })}`;
-    if (warnings.length) msg += `\n\n警告:\n` + warnings.slice(0, 20).join("\n");
+    msg += `\n\n--- Output tree ---\n${listTree(outDir, { maxEntries: 100 })}`;
+    if (warnings.length) msg += `\n\nWarnings:\n` + warnings.slice(0, 20).join("\n");
     return text(msg);
   },
 );
@@ -746,7 +746,7 @@ server.registerTool(
   },
   async ({ directory, maxDepth, maxEntries }) => {
     const dir = directory ?? resolveOutputDir();
-    if (!fs.existsSync(dir)) return errorText(`目录不存在: ${dir}`);
+    if (!fs.existsSync(dir)) return errorText(`Directory does not exist: ${dir}`);
     return text(listTree(dir, { maxDepth, maxEntries }));
   },
 );

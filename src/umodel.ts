@@ -14,7 +14,7 @@ const MAX_OUTPUT = 64 * 1024;
 
 function truncate(s: string): string {
   if (s.length <= MAX_OUTPUT) return s;
-  return s.slice(0, MAX_OUTPUT) + `\n...（已截断 ${s.length - MAX_OUTPUT} 字符）`;
+  return s.slice(0, MAX_OUTPUT) + `\n...(truncated ${s.length - MAX_OUTPUT} chars)`;
 }
 
 export function runUmodel(
@@ -24,13 +24,13 @@ export function runUmodel(
 ): Promise<RunResult> {
   if (!exe) {
     throw new Error(
-      "umodel 可执行文件路径未知。请先向用户询问 umodel_64.exe 的路径并用 umodel_session_set 记住；" +
-        "用户不清楚时再用 umodel_find_exe 自动搜索。",
+      "umodel executable path is unknown. Ask the user for the path to umodel_64.exe and remember it via umodel_session_set; " +
+        "use umodel_find_exe to search automatically if the user does not know.",
     );
   }
   if (!fs.existsSync(exe)) {
     throw new Error(
-      `umodel 可执行文件不存在: ${exe}。请让用户确认正确路径（umodel_session_set 更新），或用 umodel_find_exe 自动搜索。`,
+      `umodel executable does not exist: ${exe}. Ask the user to confirm the correct path (update via umodel_session_set), or use umodel_find_exe to search automatically.`,
     );
   }
   const timeout = timeoutMs ?? 300_000;
@@ -78,14 +78,14 @@ export function commonArgs(s: Session): string[] {
 export function formatResult(r: RunResult): string {
   const parts: string[] = [];
   parts.push(`$ ${r.command}`);
-  parts.push(`退出码: ${r.exitCode}${r.timedOut ? "（超时）" : ""}`);
+  parts.push(`Exit code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`);
   if (r.timedOut) {
     parts.push(
-      "提示：超时通常是 umodel 弹出了对话框在等待人工操作（输入 AES key 或选择引擎版本）。" +
-        "请确认是否缺少 aesKeys / gameTag，补全后重试；不要反复盲目重试。",
+      "Hint: a timeout usually means umodel popped up a dialog waiting for human input (AES key or engine version). " +
+        "Check whether aesKeys / gameTag is missing and retry after fixing it; do not blindly retry.",
     );
   }
-  if (r.stdout.trim()) parts.push(`--- 标准输出 ---\n${r.stdout}`);
-  if (r.stderr.trim()) parts.push(`--- 标准错误 ---\n${r.stderr}`);
+  if (r.stdout.trim()) parts.push(`--- stdout ---\n${r.stdout}`);
+  if (r.stderr.trim()) parts.push(`--- stderr ---\n${r.stderr}`);
   return parts.join("\n");
 }

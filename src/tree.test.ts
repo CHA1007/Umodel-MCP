@@ -33,7 +33,7 @@ test("listTree 超预算时截断", () => {
   const dir = tmpDir();
   for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), "x");
   const out = listTree(dir, { maxEntries: 2 });
-  assert.ok(out.includes("...（已截断）"));
+  assert.ok(out.includes("...(truncated)"));
 });
 
 test("listTree 对不存在目录给出提示", () => {

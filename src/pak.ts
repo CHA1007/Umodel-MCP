@@ -18,7 +18,7 @@ export const SUPPORTED_COMPRESSION = new Set(["none", "zlib", "gzip"]);
 function requireKey(keyHex?: string): Buffer {
   if (!keyHex) {
     throw new Error(
-      "未配置 AES key，无法解密 pak 索引。请先向用户询问 AES key，然后用 umodel_session_set { pakAesKey: \"0x...\" } 记住，或在调用时传入 aesKey 参数（十六进制，0x 前缀可选）。",
+      "No AES key configured, cannot decrypt the pak index. Ask the user for the AES key first, then remember it via umodel_session_set { pakAesKey: \"0x...\" }, or pass the aesKey argument (hex, 0x prefix optional).",
     );
   }
   return Buffer.from(keyHex.replace(/^0x/, ""), "hex");
